@@ -39,6 +39,20 @@ class SecureStore(context: Context) {
         get() = prefs.getBoolean("app_lock", false)
         set(value) = prefs.edit().putBoolean("app_lock", value).apply()
 
+    /** "Notify me in the background": keep the realtime connection in a foreground service (default on). */
+    var backgroundNotify: Boolean
+        get() = prefs.getBoolean("background_notify", true)
+        set(value) = prefs.edit().putBoolean("background_notify", value).apply()
+
+    /** Whether the Android 13+ notification permission prompt was already shown once automatically. */
+    var notificationPromptShown: Boolean
+        get() = prefs.getBoolean("notification_prompt_shown", false)
+        set(value) = prefs.edit().putBoolean("notification_prompt_shown", value).apply()
+
+    /** The "Set up your profile" sheet is offered once per account on this phone. */
+    fun profileSetupOffered(userId: String): Boolean = prefs.getBoolean("profile_setup_$userId", false)
+    fun markProfileSetupOffered(userId: String) = prefs.edit().putBoolean("profile_setup_$userId", true).apply()
+
     /**
      * Sign-out: removes the auth session, this phone's device id, the realtime resume point and any
      * half-finished Google sign-in. Keeps the installation id and app settings (such as App lock).

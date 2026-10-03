@@ -19,15 +19,39 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.put
 
 /** A pending remote action shown in the UI until the desktop reports its result. */
 data class PendingCommand(val id: String, val type: String, val status: String, val error: String? = null, val deviceOnline: Boolean = true)
 
-/** Why the chat / changed files could not be read from the PC (e.g. DESKTOP_OFFLINE, DESKTOP_TIMEOUT). */
+/**
+ * Why something could not be read from the PC. [code]: DESKTOP_OFFLINE, DESKTOP_TIMEOUT, DESKTOP_OUTDATED
+ * (the PC's BambooKit Desktop does not know this request yet), DESKTOP_ERROR (the PC answered with an error),
+ * TIMEOUT (no answer in time), NETWORK, or an API error code.
+ */
 data class ContentError(val code: String, val message: String) {
     val desktopUnavailable get() = code == "DESKTOP_OFFLINE" || code == "DESKTOP_TIMEOUT"
+    val timedOut get() = code == "DESKTOP_TIMEOUT" || code == "TIMEOUT"
+    val desktopOutdated get() = code == "DESKTOP_OUTDATED"
 }
+
+/** Maps an API failure to a [ContentError], recognising an older PC that does not know the request kind. */
+fun contentErrorOf(e: Throwable, fallback: String): ContentError {
+    val api = e as? ApiException ?: return ContentError("UNKNOWN", e.message ?: fallback)
+    val msg = api.message ?: fallback
+    if (api.code == "DESKTOP_ERROR" && Regex("unsupported request|unknown (request|kind)|not supported", RegexOption.IGNORE_CASE).containsMatchIn(msg)) {
+        return ContentError("DESKTOP_OUTDATED", "Update BambooKit Desktop on your PC to see this from your phone.")
+    }
+    return ContentError(api.code, msg)
+}
+
+/**
+ * "Continue on PC" in progress for the open session: sent at [sentAt] (elapsed realtime ms) and waiting for
+ * session.updated with remote = true. [error] is set when it failed or timed out.
+ */
+data class ContinueRequest(val sentAt: Long, val error: String? = null)
 
 data class SessionDetail(
     val sessionId: String,
@@ -50,6 +74,12 @@ data class SessionDetail(
     val tree: TreeView? = null,
     /** Prompts, timeline, changes, tests and summary: live from the PC, or its saved copy (7 days). */
     val history: HistoryView = HistoryView(),
+    /** "Continue on PC" sent and not yet confirmed (null when none is in progress). */
+    val continueRequest: ContinueRequest? = null,
+    /** A message is being sent (SEND_MESSAGE). */
+    val sending: Boolean = false,
+    /** When this session was last read from the API (elapsed realtime ms), to avoid re-reading on rotation. */
+    val loadedAt: Long = 0,
 )
 
 data class HistoryView(
@@ -69,6 +99,7 @@ data class ProfileView(
     val error: String? = null,
     val photoBusy: Boolean = false,
     val deleting: Boolean = false,
+    val savingName: Boolean = false,
 )
 
 data class FileMapView(
@@ -83,6 +114,8 @@ data class DiagramView(
     val loaded: Boolean = false,
     val diagram: ProjectDiagram? = null,
     val error: ContentError? = null,
+    /** The diagram shown is the last one saved on this phone (time in epoch ms) while a fresh one is built. */
+    val cachedAt: Long? = null,
 )
 
 /** A project file opened on the phone, read live from the PC. View only — the phone never edits files. */
@@ -117,8 +150,11 @@ class BambooStore(
     private val store: SecureStore,
     private val json: Json,
     private val scope: CoroutineScope,
+    private val diagramCache: DiagramCache,
     private val notifier: (NotificationItem) -> Unit,
 ) {
+    /** Each BambooKit notification rings once, and never for events from before the connection started. */
+    private val notificationGate = NotificationGate()
     val session get() = auth.session
     val link get() = realtime.state
 
@@ -209,6 +245,8 @@ class BambooStore(
         store.clearSignedInState(keepPendingSignIn)
         auth.signOut()
         imageCache.evictAll()
+        notificationGate.clear()
+        diagramCache.clear()
         _profile.value = ProfileView()
         _myDeviceId.value = null
         _overview.value = null
@@ -247,7 +285,10 @@ class BambooStore(
     // ---------------------------------------------------------------- session detail
 
     fun openSession(id: String) {
-        if (_detail.value?.sessionId != id) _detail.value = SessionDetail(sessionId = id)
+        val d = _detail.value
+        // Re-opening right after a load (e.g. the phone was rotated) keeps what is shown.
+        if (d?.sessionId == id && d.loadedAt > 0 && android.os.SystemClock.elapsedRealtime() - d.loadedAt < REOPEN_FRESH_MS) return
+        if (d?.sessionId != id) _detail.value = SessionDetail(sessionId = id)
         loadSession(id, keep = true)
     }
 
@@ -294,15 +335,34 @@ class BambooStore(
         }
     }
 
-    /** The session's project drawn as components; computed fresh on the PC on every call (Rescan). */
+    /** Cache key of the open session's project diagram: the project, or its folder on that PC. */
+    private fun diagramKey(d: SessionDetail): String? {
+        val s = d.session ?: return null
+        return s.projectId?.let { "p:$it" } ?: "d:${s.deviceId}:${s.directory}"
+    }
+
+    /**
+     * The session's project drawn as components; computed fresh on the PC on every call (Rescan), which can
+     * take up to a minute on large projects. The last diagram of the project (memory + small disk cache) is
+     * shown meanwhile.
+     */
     fun loadDiagram() {
         val id = _detail.value?.sessionId ?: return
         diagramJob?.cancel()
-        _detail.update { d -> if (d?.sessionId == id) d.copy(diagram = (d.diagram ?: DiagramView()).copy(loading = true)) else d }
+        _detail.update { d -> if (d?.sessionId == id) d.copy(diagram = (d.diagram ?: DiagramView()).copy(loading = true, error = null)) else d }
         diagramJob = scope.launch {
+            val key = _detail.value?.let { diagramKey(it) }
+            if (key != null && _detail.value?.diagram?.diagram == null) {
+                diagramCache.get(key)?.let { cached ->
+                    _detail.update { d ->
+                        if (d?.sessionId == id && d.diagram?.diagram == null) d.copy(diagram = DiagramView(loading = true, loaded = true, diagram = cached.diagram, cachedAt = cached.savedAt)) else d
+                    }
+                }
+            }
             try {
                 val diagram = api.diagram(id)
                 _detail.update { d -> if (d?.sessionId == id) d.copy(diagram = DiagramView(loading = false, loaded = true, diagram = diagram)) else d }
+                if (key != null && diagram != null && diagram.nodes.isNotEmpty()) diagramCache.put(key, diagram)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -333,8 +393,7 @@ class BambooStore(
         }
     }
 
-    private fun contentError(e: Exception, fallback: String): ContentError =
-        (e as? ApiException)?.let { ContentError(it.code, it.message ?: fallback) } ?: ContentError("UNKNOWN", e.message ?: fallback)
+    private fun contentError(e: Exception, fallback: String): ContentError = contentErrorOf(e, fallback)
 
     /** Retry reading the chat and changed files from the PC. */
     fun retryContent() {
@@ -411,7 +470,11 @@ class BambooStore(
             val approvals = api.approvals().filter { it.sessionId == id }
             _detail.update { d ->
                 if (d?.sessionId != id) d
-                else d.copy(session = session, approvals = approvals, loading = false, error = null, commands = if (keep) d.commands else emptyList())
+                else d.copy(
+                    session = session, approvals = approvals, loading = false, error = null, commands = if (keep) d.commands else emptyList(),
+                    loadedAt = android.os.SystemClock.elapsedRealtime(),
+                    continueRequest = d.continueRequest?.takeUnless { session.remote },
+                )
             }
         }.onFailure { e -> _detail.update { d -> if (d?.sessionId == id) d.copy(loading = false, error = e.message) else d } }
         loadContent(id)
@@ -445,23 +508,127 @@ class BambooStore(
         }
     }
 
-    /** Stop: asks the PC to abort the running agent in the open session (the only session command the phone sends). */
-    fun stop() {
+    /** Stop: asks the PC to abort the running agent in the open session (always allowed). */
+    fun stop() = sessionCommand("ABORT", "Could not stop")
+
+    /** Continue: asks the agent to keep going (only after "Continue on PC"). */
+    fun continueSession() = sessionCommand("CONTINUE", "Could not continue")
+
+    /** Retry: asks the agent to retry its last step (only after "Continue on PC"). */
+    fun retrySession() = sessionCommand("RETRY", "Could not retry")
+
+    private fun sessionCommand(type: String, failure: String) {
         val d = _detail.value ?: return
         scope.launch {
-            runCatching { api.sendCommand(d.sessionId, "ABORT") }
+            runCatching { api.sendCommand(d.sessionId, type) }
                 .onSuccess { res ->
-                    track(PendingCommand(res.data.id, "ABORT", res.data.status, deviceOnline = res.deviceOnline))
-                    if (!res.deviceOnline) _messages.tryEmit("${pcName(d.session?.deviceId)} is offline — Stop expires in 5 minutes if it does not reconnect.")
+                    track(PendingCommand(res.data.id, type, res.data.status, deviceOnline = res.deviceOnline))
+                    if (!res.deviceOnline) _messages.tryEmit("${pcName(d.session?.deviceId)} is offline. ${commandLabel(type)} runs if it reconnects within 5 minutes.")
                 }
-                .onFailure { report("Could not stop", it) }
+                .onFailure { handleCommandFailure(d.sessionId, failure, it) }
         }
     }
 
-    fun respond(approval: Approval, reply: String) = scope.launch {
-        runCatching { api.respondApproval(approval.id, reply) }
-            .onSuccess { refreshApprovals() }
-            .onFailure { report("Could not answer approval", it) }
+    /** Sends a chat message to the agent. [onResult] gets true when the API accepted it (the box is then cleared). */
+    fun sendMessage(text: String, onResult: (Boolean) -> Unit) {
+        val d = _detail.value ?: return onResult(false)
+        val body = text.trim()
+        if (body.isEmpty()) return onResult(false)
+        _detail.update { it?.copy(sending = true) }
+        scope.launch {
+            runCatching { api.sendCommand(d.sessionId, "SEND_MESSAGE", buildJsonObject { put("text", body) }) }
+                .onSuccess { res ->
+                    track(PendingCommand(res.data.id, "SEND_MESSAGE", res.data.status, deviceOnline = res.deviceOnline))
+                    if (!res.deviceOnline) _messages.tryEmit("${pcName(d.session?.deviceId)} is offline. The message is sent if it reconnects within 5 minutes.")
+                    onResult(true)
+                }
+                .onFailure {
+                    handleCommandFailure(d.sessionId, "Could not send the message", it)
+                    onResult(false)
+                }
+            _detail.update { it?.copy(sending = false) }
+        }
+    }
+
+    /**
+     * Asks the PC to open this session ("Continue on PC"). The PC sets remote = true and a session.updated
+     * event follows; until then the screen shows "Opening on your PC..." (timing out after [CONTINUE_TIMEOUT_MS]).
+     */
+    fun continueOnPc() {
+        val d = _detail.value ?: return
+        val sentAt = android.os.SystemClock.elapsedRealtime()
+        _detail.update { if (it?.sessionId == d.sessionId) it.copy(continueRequest = ContinueRequest(sentAt)) else it }
+        scope.launch {
+            runCatching { api.sendCommand(d.sessionId, "CONTINUE_ON_PC") }
+                .onSuccess { res ->
+                    track(PendingCommand(res.data.id, "CONTINUE_ON_PC", res.data.status, deviceOnline = res.deviceOnline))
+                    delay(CONTINUE_TIMEOUT_MS)
+                    val now = _detail.value
+                    if (now?.sessionId == d.sessionId && now.continueRequest?.sentAt == sentAt && now.session?.remote != true) {
+                        // Re-read once in case the confirmation was missed, then explain.
+                        val fresh = runCatching { api.session(d.sessionId) }.getOrNull()
+                        _detail.update { cur ->
+                            val req = cur?.continueRequest
+                            if (cur?.sessionId != d.sessionId || req?.sentAt != sentAt) cur
+                            else if (fresh?.remote == true) cur.copy(session = fresh, continueRequest = null)
+                            else cur.copy(
+                                continueRequest = req.copy(
+                                    error = "${pcName(d.session?.deviceId)} didn't open the session within 30 seconds. Make sure BambooKit Desktop is open and up to date on your PC, then try again.",
+                                ),
+                            )
+                        }
+                    }
+                }
+                .onFailure { e ->
+                    _detail.update { cur ->
+                        if (cur?.sessionId != d.sessionId) cur
+                        else cur.copy(continueRequest = ContinueRequest(sentAt, error = commandError("Could not continue on your PC", e)))
+                    }
+                }
+        }
+    }
+
+    fun dismissContinueError() {
+        _detail.update { it?.copy(continueRequest = null) }
+    }
+
+    private fun handleCommandFailure(sessionId: String, prefix: String, e: Throwable) {
+        if ((e as? ApiException)?.code == "SESSION_NOT_CONTINUED") {
+            // The session is not (or no longer) continued on the PC: back to view only.
+            _detail.update { d -> if (d?.sessionId == sessionId) d.copy(session = d.session?.copy(remote = false)) else d }
+            _messages.tryEmit("Continue this session on your PC first, then you can chat in it from here.")
+            scope.launch { runCatching { api.session(sessionId) }.onSuccess { s -> _detail.update { d -> if (d?.sessionId == sessionId) d.copy(session = s) else d } } }
+            return
+        }
+        _messages.tryEmit(commandError(prefix, e))
+    }
+
+    private fun commandError(prefix: String, e: Throwable): String = when ((e as? ApiException)?.code) {
+        "DEVICE_NOT_PAIRED" -> "$prefix: this phone is not paired with that PC. Pair it again from Devices."
+        "DEVICE_REVOKED" -> "$prefix: that PC was removed from your account."
+        else -> "$prefix: ${e.message}"
+    }
+
+    private val _answering = MutableStateFlow<Set<String>>(emptySet())
+    /** Approvals whose answer is being sent. */
+    val answering: StateFlow<Set<String>> = _answering
+
+    fun respond(approval: Approval, reply: String) = sendAnswer(approval) { api.respondApproval(approval.id, reply) }
+
+    /** Answers a question request (one list of chosen labels / typed text per question). */
+    fun answer(approval: Approval, answers: List<List<String>>) = sendAnswer(approval) { api.answerApproval(approval.id, answers) }
+
+    private fun sendAnswer(approval: Approval, send: suspend () -> Unit) = scope.launch {
+        _answering.update { it + approval.id }
+        runCatching { send() }
+            .onFailure { e ->
+                when ((e as? ApiException)?.code) {
+                    "APPROVAL_NOT_PENDING" -> _messages.tryEmit("This request was already answered.")
+                    else -> _messages.tryEmit(commandError(if (approval.isQuestion) "Could not send your answer" else "Could not answer the request", e))
+                }
+            }
+        refreshApprovals()
+        _answering.update { it - approval.id }
     }
 
     /** Opens a project file in the read-only code viewer, read live from the PC (GET /file). */
@@ -515,6 +682,13 @@ class BambooStore(
         runCatching { api.rename(device.id, name) }.onSuccess { refreshAll() }.onFailure { report("Could not rename", it) }
     }
 
+    /** A notification was tapped: mark it read. */
+    fun markRead(notificationId: String) = scope.launch {
+        runCatching { api.markRead(notificationId) }
+            .onSuccess { _notifications.update { list -> list.map { if (it.id == notificationId && it.readAt == null) it.copy(readAt = java.time.Instant.now().toString()) else it } } }
+        refreshOverviewSoon()
+    }
+
     fun markAllRead() = scope.launch {
         runCatching { api.markAllRead(); _notifications.value = api.notifications() }.onFailure { report("Could not mark read", it) }
         refreshOverviewSoon()
@@ -528,6 +702,30 @@ class BambooStore(
     }
 
     // ---------------------------------------------------------------- profile
+
+    /** Saves the nickname (already validated). [onDone] gets null on success or a readable error. */
+    fun saveNickname(name: String, onDone: (String?) -> Unit = {}) = scope.launch {
+        _profile.update { it.copy(savingName = true) }
+        runCatching { api.updateNickname(name) }
+            .onSuccess { a ->
+                _profile.update { it.copy(account = mergeAccount(it.account, a), savingName = false) }
+                onDone(null)
+            }
+            .onFailure { e ->
+                _profile.update { it.copy(savingName = false) }
+                onDone(
+                    when ((e as? ApiException)?.status) {
+                        400 -> e.message ?: "That nickname can't be used"
+                        404, 405 -> "The BambooKit server doesn't support nicknames yet. Try again later."
+                        else -> "Could not save the nickname: ${e.message}"
+                    },
+                )
+            }
+    }
+
+    /** A fresh profile from the API; keeps the cached photo URL when it points at the same stored photo. */
+    private fun mergeAccount(old: Account?, new: Account): Account =
+        if (old?.avatarUrl != null && new.avatarUrl != null && old.avatarUrl.substringBefore('?') == new.avatarUrl.substringBefore('?')) new.copy(avatarUrl = old.avatarUrl) else new
 
     private val imageCache = LruCache<String, Bitmap>(8)
 
@@ -611,7 +809,11 @@ class BambooStore(
                 "session.updated" -> {
                     val s = json.decodeFromJsonElement<Session>(event.payload)
                     _sessions.update { list -> (listOf(s) + list.filterNot { it.id == s.id }).sortedByDescending { it.updatedAt } }
-                    _detail.update { d -> if (d?.sessionId == s.id) d.copy(session = s) else d }
+                    _detail.update { d ->
+                        if (d?.sessionId != s.id) d
+                        // remote = true confirms "Continue on PC".
+                        else d.copy(session = s, continueRequest = d.continueRequest?.takeUnless { s.remote })
+                    }
                     // Busy sessions send many updates (current action); the history is re-read at most every few seconds.
                     if (_detail.value?.sessionId == s.id) loadHistory(delayMs = 1000)
                     refreshOverviewSoon()
@@ -645,14 +847,37 @@ class BambooStore(
                     if (_detail.value?.sessionId == event.sessionId && _detail.value?.fileMap != null) loadFileMap(delayMs = 800)
                     refreshOverviewSoon()
                 }
-                "approval.created", "approval.updated" -> refreshApprovals().also { refreshOverviewSoon() }
+                "approval.created", "approval.updated" -> {
+                    // Apply the event right away; the full list is re-read too, as the source of truth.
+                    runCatching { json.decodeFromJsonElement<Approval>(event.payload) }.getOrNull()?.let { a ->
+                        _approvals.update { list ->
+                            if (a.isPending) (listOf(a) + list.filterNot { it.id == a.id }).sortedByDescending { it.createdAt }
+                            else list.filterNot { it.id == a.id }
+                        }
+                        _detail.update { d ->
+                            if (d?.sessionId != a.sessionId) d
+                            else d.copy(approvals = if (a.isPending) listOf(a) + d.approvals.filterNot { it.id == a.id } else d.approvals.filterNot { it.id == a.id })
+                        }
+                    }
+                    refreshApprovals()
+                    refreshOverviewSoon()
+                }
                 "command.updated" -> {
                     val c = json.decodeFromJsonElement<CommandUpdate>(event.payload)
                     _detail.update { d ->
                         if (d == null || d.commands.none { it.id == c.id }) d
                         else d.copy(commands = d.commands.map { if (it.id == c.id) it.copy(status = c.status, error = c.error) else it })
                     }
-                    if (c.status == "FAILED" && _detail.value?.commands?.any { it.id == c.id } == true) _messages.tryEmit("Desktop could not run ${c.type}: ${c.error ?: "failed"}")
+                    val mine = _detail.value?.commands?.any { it.id == c.id } == true
+                    if (c.status == "FAILED" && mine) {
+                        if (c.type == "CONTINUE_ON_PC") {
+                            _detail.update { d ->
+                                val req = d?.continueRequest
+                                if (req == null) d
+                                else d.copy(continueRequest = req.copy(error = "Your PC couldn't open the session: ${c.error ?: "failed"}. Update BambooKit Desktop if this keeps happening."))
+                            }
+                        } else _messages.tryEmit("Your PC could not run ${commandLabel(c.type)}: ${c.error ?: "failed"}")
+                    }
                 }
                 "project.updated" -> {
                     val p = json.decodeFromJsonElement<Project>(event.payload)
@@ -682,8 +907,12 @@ class BambooStore(
                 "notification" -> {
                     val n = json.decodeFromJsonElement<NotificationItem>(event.payload)
                     _notifications.update { listOf(n) + it.filterNot { x -> x.id == n.id } }
-                    notifier(n)
+                    if (notificationGate.shouldNotify(n.id, event.seq, realtime.connectionStartSeq)) notifier(n)
                     refreshOverviewSoon()
+                }
+                "profile.updated" -> {
+                    val a = json.decodeFromJsonElement<Account>(event.payload)
+                    _profile.update { it.copy(account = mergeAccount(it.account, a)) }
                 }
             }
         } catch (e: CancellationException) {
@@ -712,6 +941,21 @@ class BambooStore(
 
 /** Pause between history re-reads while realtime events keep arriving for the open session. */
 private const val HISTORY_REFRESH_MS = 3000L
+
+/** How long "Opening on your PC..." waits for the PC to confirm "Continue on PC". */
+const val CONTINUE_TIMEOUT_MS = 30_000L
+
+/** Re-opening the same session within this time (e.g. after rotating the phone) does not re-read it. */
+private const val REOPEN_FRESH_MS = 15_000L
+
+fun commandLabel(type: String): String = when (type) {
+    "ABORT" -> "Stop"
+    "CONTINUE" -> "Continue"
+    "RETRY" -> "Retry"
+    "SEND_MESSAGE" -> "Message"
+    "CONTINUE_ON_PC" -> "Continue on PC"
+    else -> type.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
 
 @kotlinx.serialization.Serializable
 private data class DiffPayload(val files: List<ChangedFile> = emptyList())

@@ -67,6 +67,17 @@ val Transparent = Color.Transparent
 val UserBubble = BambooGreenSubtle
 val CodeBlockBackground = Color(0xFF0D0E0C)
 
+// Requests from the agent: permission approvals (warning) and questions (teal).
+val RequestBorder = StatusWarning.copy(alpha = 0.45f)
+val QuestionAccent = ChangeRenamed
+val QuestionAccentTint = ChangeRenamedTint
+val QuestionBorder = ChangeRenamed.copy(alpha = 0.45f)
+val SelectedOption = BambooGreenSubtle
+
+// Session chat composer and "Continue on PC".
+val ComposerBackground = BambooSurface
+val ContinueCardBorder = StatusRunning.copy(alpha = 0.45f)
+
 // Project diagram and file tree.
 val DiagramArrow = TextMuted.copy(alpha = 0.75f)
 val DiagramArrowUsed = StatusRunning.copy(alpha = 0.85f)

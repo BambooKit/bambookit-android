@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,6 +107,9 @@ internal fun formatSize(bytes: Long?): String = when {
 
 /** Lines longer than this are cut for display (minified files). */
 private const val MAX_LINE = 2000
+
+/** Widest the scrollable code area may get, in pixels. */
+internal const val MAX_CONTENT_PX = 60_000f
 
 private class Syntax(
     val lineComments: List<String> = emptyList(),
@@ -290,7 +294,7 @@ fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: ()
         Column(Modifier.fillMaxSize().background(BambooObsidian).imePadding()) {
             val content = view.content
             val lineCount = remember(content) { content?.let { lineCountOf(it) } }
-            var searching by remember { mutableStateOf(false) }
+            var searching by rememberSaveable(view.path) { mutableStateOf(false) }
 
             ScreenTopBar(
                 title = view.path.substringAfterLast('/').substringAfterLast('\\'),
@@ -311,16 +315,11 @@ fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: ()
             when {
                 view.loading -> LoadingState("Opening the file on $pcTitle…")
                 view.error != null -> ErrorState(
-                    title = when (view.error.code) {
-                        "DESKTOP_OFFLINE" -> "$pcTitle is offline"
-                        "DESKTOP_TIMEOUT" -> "$pcTitle didn't answer"
-                        "NETWORK" -> "Can't reach BambooKit"
-                        else -> "Can't show this file"
-                    },
-                    message = view.error.message,
+                    title = errorTitle(view.error, pcTitle, "Can't show this file"),
+                    message = errorMessage(view.error, pcTitle),
                     icon = Icons.Filled.ErrorOutline,
                     onRetry = onRetry,
-                    color = if (view.error.desktopUnavailable) StatusWarning else StatusFailed,
+                    color = if (view.error.desktopUnavailable || view.error.desktopOutdated || view.error.timedOut) StatusWarning else StatusFailed,
                 )
                 content == null -> Unit
                 else -> CodeContent(view.path, content, searching, onCloseSearch = { searching = false })
@@ -328,6 +327,9 @@ fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: ()
         }
     }
 }
+
+/** NUL characters in the first part of the text: a binary file (images, archives...) sent as text. */
+internal fun looksBinary(content: String): Boolean = content.indexOf('\u0000').let { it in 0 until 8000 }
 
 private fun lineCountOf(content: String) = if (content.isEmpty()) 0 else content.count { it == '\n' } + 1
 
@@ -395,8 +397,11 @@ internal fun CodeContent(path: String, content: String, searching: Boolean, onCl
                 onClose = onCloseSearch,
             )
         }
-        if (content.isEmpty()) EmptyState("Empty file", "This file has no content.", Icons.Filled.Description)
-        else CodeLines(path, lines, content.length, matches, current, query.length)
+        when {
+            content.isEmpty() -> EmptyState("Empty file", "This file has no content.", Icons.Filled.Description)
+            looksBinary(content) -> EmptyState("Binary file", "This file isn't text, so it can't be shown on the phone. Open it on your PC.", Icons.Filled.Description)
+            else -> CodeLines(path, lines, content.length, matches, current, query.length)
+        }
     }
 }
 
@@ -426,9 +431,12 @@ private fun SearchBar(query: String, onQuery: (String) -> Unit, counter: String,
 
 @Composable
 private fun CodeLines(path: String, lines: List<String>, totalChars: Int, matches: List<Match>, current: Int, queryLength: Int) {
-    val highlighted by produceState<List<AnnotatedString>?>(null, path, lines) {
-        value = withContext(Dispatchers.Default) { highlightAll(path, lines, totalChars) }
+    // Keep the highlighted lines together with the lines they were made from: when another file is shown,
+    // the previous result must not be drawn over the new file's lines.
+    val highlightedFor by produceState<Pair<List<String>, List<AnnotatedString>>?>(null, path, lines) {
+        value = lines to withContext(Dispatchers.Default) { highlightAll(path, lines, totalChars) }
     }
+    val highlighted = highlightedFor?.takeIf { it.first === lines }?.second
     val style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -449,7 +457,8 @@ private fun CodeLines(path: String, lines: List<String>, totalChars: Int, matche
         )
         BoxWithConstraints(Modifier.fillMaxSize().background(CodeBlockBackground)) {
             val viewportPx = with(density) { maxWidth.toPx() }
-            val contentPx = max(viewportPx, gutterPx + longest * charPx + with(density) { 32.dp.toPx() })
+            // Capped: Compose layouts can't be arbitrarily wide (very long lines are cut at MAX_LINE anyway).
+            val contentPx = min(MAX_CONTENT_PX, max(viewportPx, gutterPx + longest * charPx + with(density) { 32.dp.toPx() }))
             LaunchedEffect(current, matches) {
                 val m = matches.getOrNull(current) ?: return@LaunchedEffect
                 scope.launch { listState.animateScrollToItem(max(0, m.line - 6)) }

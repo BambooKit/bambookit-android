@@ -122,6 +122,9 @@ fun relative(iso: String?): String {
     }.getOrDefault("")
 }
 
+/** "just now", "5m ago"… for an epoch-millisecond time. */
+fun relativeMillis(epochMs: Long): String = relative(Instant.ofEpochMilli(epochMs).toString())
+
 fun plural(n: Int, word: String) = "$n $word${if (n == 1) "" else "s"}"
 
 // ------------------------------------------------------------------ primitives

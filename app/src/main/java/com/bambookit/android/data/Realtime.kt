@@ -48,6 +48,13 @@ class RealtimeClient(
     private var job: Job? = null
     private var source: EventSource? = null
 
+    /** The server's event sequence when the current connection became ready (null before the first "ready"). */
+    @Volatile
+    var connectionStartSeq: Long? = null
+        private set
+
+    val isRunning: Boolean get() = job?.isActive == true
+
     fun start() {
         if (job?.isActive == true) return
         job = scope.launch {
@@ -87,12 +94,13 @@ class RealtimeClient(
                         "ready" -> {
                             reachedReady = true
                             _state.value = LinkState.Connected
-                            if (store.lastSeq == null) {
-                                // First connection: start from now.
-                                runCatching { json.parseToJsonElement(data) }.getOrNull()?.let { el ->
-                                    (el as? kotlinx.serialization.json.JsonObject)?.get("seq")?.toString()?.toLongOrNull()?.let { store.lastSeq = it }
-                                }
-                            }
+                            val seq = runCatching { json.parseToJsonElement(data) }.getOrNull()
+                                ?.let { (it as? kotlinx.serialization.json.JsonObject)?.get("seq")?.toString()?.toLongOrNull() }
+                            // Stored events up to this sequence were published before this connection started;
+                            // they may be replayed now (?after=) but must not ring as new notifications.
+                            connectionStartSeq = seq
+                            // First connection: start from now.
+                            if (store.lastSeq == null && seq != null) store.lastSeq = seq
                             _ready.tryEmit(Unit)
                         }
                         "ping" -> Unit

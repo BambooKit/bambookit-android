@@ -323,7 +323,7 @@ fun DiagramPane(d: SessionDetail, pcTitle: String, onLoad: () -> Unit, onLoadFil
     val dg = view?.diagram
 
     when {
-        view == null || (!view.loaded && view.loading) -> LoadingState("Scanning the project on $pcTitle…")
+        view == null || (!view.loaded && view.loading) -> LoadingState("Building diagram on your PC… this can take up to a minute for large projects")
         view.error != null && !view.loaded -> ContentUnavailable(view.error, pcTitle, view.loading, onLoad)
         dg == null || dg.nodes.isEmpty() -> Column(Modifier.fillMaxSize()) {
             EmptyState("No source files found", "The project folder on $pcTitle has no source files to draw.", Icons.Filled.AccountTree, actionLabel = "Rescan", onAction = onLoad)
@@ -347,15 +347,24 @@ fun DiagramPane(d: SessionDetail, pcTitle: String, onLoad: () -> Unit, onLoadFil
                     Text("Rescan")
                 }
             }
+            if (view.cachedAt != null && view.loading) {
+                Banner(
+                    "Showing the diagram saved ${relativeMillis(view.cachedAt)}. Building a fresh one on your PC… this can take up to a minute for large projects.",
+                    Icons.Filled.Info, color = StatusRunning, tint = StatusRunningTint, busy = true,
+                    modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.s),
+                )
+            }
             if (dg.truncated) {
                 Banner(
-                    "Large project: showing the first ${dg.files} source files", Icons.Filled.Info, color = StatusWarning, tint = StatusWarningTint,
+                    "Partial diagram: the project is large, so only the first ${plural(dg.files, "source file")} are drawn.", Icons.Filled.Info,
+                    color = StatusWarning, tint = StatusWarningTint,
                     modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.s),
                 )
             }
             if (view.error != null) {
                 Banner(
-                    view.error.message, Icons.Filled.ErrorOutline, color = StatusWarning, tint = StatusWarningTint, title = "Rescan failed — showing the last scan",
+                    errorMessage(view.error, pcTitle), Icons.Filled.ErrorOutline, color = StatusWarning, tint = StatusWarningTint,
+                    title = if (view.cachedAt != null) "Couldn't rebuild: showing the saved diagram" else "Rescan failed: showing the last scan",
                     actionLabel = "Retry", busy = view.loading, onAction = onLoad,
                     modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.s),
                 )
@@ -388,7 +397,7 @@ fun DiagramPane(d: SessionDetail, pcTitle: String, onLoad: () -> Unit, onLoadFil
             }
             HorizontalDivider(color = BambooBorder)
             LazyColumn(contentPadding = PaddingValues(bottom = Space.xl)) {
-                items(node.files, key = { it }) { path ->
+                items(node.files.distinct(), key = { it }) { path ->
                     val isUsed = normPath(path) in used
                     Row(
                         Modifier.fillMaxWidth().clickable { sheetNode = null; onOpenFile(path) }.padding(horizontal = Space.screen, vertical = 11.dp),

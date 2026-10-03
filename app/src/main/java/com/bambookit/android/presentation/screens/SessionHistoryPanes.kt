@@ -105,6 +105,8 @@ import com.bambookit.android.presentation.theme.TextMuted
 import com.bambookit.android.presentation.theme.TextPrimary
 import com.bambookit.android.presentation.theme.TextSecondary
 import com.bambookit.android.presentation.theme.TimelineRail
+import com.bambookit.android.presentation.theme.QuestionAccent
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.math.max
@@ -192,7 +194,7 @@ internal fun LiveActivity(s: Session, command: PendingCommand?, onStop: () -> Un
 
 @Composable
 internal fun CommandStatus(c: PendingCommand) {
-    val label = if (c.type == "ABORT") "Stop" else c.type
+    val label = com.bambookit.android.data.commandLabel(c.type)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
         when (c.status) {
             "PENDING" -> {
@@ -534,7 +536,11 @@ internal fun TimelinePane(
                         EventBody(row, label, color, onOpenFile)
                     }
                 }
-                is ApprovalRow -> TimelineItem(row.at, Icons.Filled.Shield, StatusWarning, highlight = false) {
+                is ApprovalRow -> TimelineItem(
+                    row.at,
+                    if (row.a.isQuestion) Icons.AutoMirrored.Filled.HelpOutline else Icons.Filled.Shield,
+                    if (row.a.isQuestion) QuestionAccent else StatusWarning, highlight = false,
+                ) {
                     ApprovalBody(row.a)
                     if (row.a.status == "PENDING") {
                         Spacer(Modifier.height(Space.s))
@@ -617,6 +623,9 @@ private fun EventBody(row: EventRow, label: String, color: Color, onOpenFile: (S
 private fun approvalOutcome(a: Approval): Pair<String, Color> = when {
     a.status == "PENDING" -> "Waiting for you" to StatusWarning
     a.status == "RESPONDING" -> "Answer sent, waiting for the PC" to StatusRunning
+    a.status == "EXPIRED" -> "No longer needed" to TextMuted
+    a.isQuestion && a.reply == "reject" -> "Dismissed" to TextSecondary
+    a.isQuestion -> "Answered" to StatusSuccess
     a.reply == "once" -> "Approved once" to StatusSuccess
     a.reply == "always" -> "Always allowed" to StatusSuccess
     a.reply == "reject" -> "Rejected" to StatusFailed
@@ -626,29 +635,10 @@ private fun approvalOutcome(a: Approval): Pair<String, Color> = when {
 @Composable
 private fun ApprovalBody(a: Approval) {
     val (outcome, color) = approvalOutcome(a)
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-        Text("Approval", color = StatusWarning, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        if (a.permission.isNotBlank()) Text("  ·  ${a.permission}", color = TextSecondary, fontSize = 12.sp)
-    }
-    (a.title ?: a.patterns.joinToString("\n")).takeIf { it.isNotBlank() }?.let {
-        Mono(it, color = TextPrimary, size = 11, maxLines = 4, modifier = Modifier.padding(top = 4.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(CodeBlockBackground).padding(horizontal = 8.dp, vertical = 5.dp))
-    }
+    RequestSummary(a)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
         Text(outcome, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         parseInstant(a.resolvedAt)?.let { Text("  ·  ${clock(it)}", color = TextMuted, fontSize = 11.sp) }
-    }
-}
-
-/** Compact Reject / Always / Approve once buttons; answers go to the PC through the API. */
-@Composable
-internal fun ApprovalButtons(onReply: (String) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(
-            onClick = { onReply("reject") }, modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusFailed), contentPadding = PaddingValues(horizontal = 6.dp),
-        ) { Text("Reject", fontSize = 13.sp) }
-        OutlinedButton(onClick = { onReply("always") }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Always", fontSize = 13.sp) }
-        Button(onClick = { onReply("once") }, modifier = Modifier.weight(1.3f), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Approve once", fontSize = 13.sp) }
     }
 }
 

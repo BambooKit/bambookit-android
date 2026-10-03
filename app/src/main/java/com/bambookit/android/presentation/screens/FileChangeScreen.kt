@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -209,9 +210,10 @@ fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: Strin
     if (LocalAppLocked.current) return
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(BambooObsidian)) {
-            var mode by remember(change.file) { mutableIntStateOf(0) }
-            var selected by remember(change.file) { mutableIntStateOf(-1) }
-            var searching by remember { mutableStateOf(false) }
+            // Saved across rotation.
+            var mode by rememberSaveable(change.file) { mutableIntStateOf(0) }
+            var selected by rememberSaveable(change.file) { mutableIntStateOf(-1) }
+            var searching by rememberSaveable(change.file) { mutableStateOf(false) }
             val v = versions?.takeIf { it.path == change.file }
             val text = when (mode) {
                 1 -> v?.versions?.before
@@ -224,7 +226,7 @@ fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: Strin
             }
 
             ScreenTopBar(
-                title = change.file.substringAfterLast('/'),
+                title = change.file.substringAfterLast('/').substringAfterLast('\\'),
                 subtitle = change.file,
                 navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close") } },
                 actions = {
@@ -326,7 +328,7 @@ private fun DiffLines(lines: List<DiffLine>) {
     BoxWithConstraints(Modifier.fillMaxSize().background(CodeBlockBackground)) {
         val viewportPx = with(density) { maxWidth.toPx() }
         // Two gutters (digits + padding each), marker column, text, and some end padding.
-        val contentPx = max(viewportPx, (digits * 2 + 3 + longest) * charPx + with(density) { 56.dp.toPx() })
+        val contentPx = kotlin.math.min(MAX_CONTENT_PX, max(viewportPx, (digits * 2 + 3 + longest) * charPx + with(density) { 56.dp.toPx() }))
         Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
             SelectionContainer {
                 LazyColumn(Modifier.width(with(density) { contentPx.toDp() }).fillMaxHeight(), contentPadding = PaddingValues(bottom = 16.dp)) {
@@ -391,7 +393,10 @@ private fun VersionPane(
                 "Before and After need $pcTitle online",
                 "Full file versions are read live from the PC and never stored. The Diff tab shows the changes saved in the session history.",
                 Icons.Filled.CloudOff, onRetry = onRetry, color = StatusWarning,
-            ) else ErrorState("Couldn't read this file", err.message, Icons.Filled.ErrorOutline, onRetry = onRetry)
+            ) else ErrorState(
+                errorTitle(err, pcTitle, "Couldn't read this file"), errorMessage(err, pcTitle), Icons.Filled.ErrorOutline, onRetry = onRetry,
+                color = if (err.desktopOutdated || err.timedOut) StatusWarning else StatusFailed,
+            )
             TextButton(onClick = onShowDiff) { Text("Show diff") }
         }
         v == null -> Unit

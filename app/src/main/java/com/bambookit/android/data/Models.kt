@@ -10,7 +10,10 @@ import kotlinx.serialization.json.JsonElement
 data class Account(
     val id: String = "",
     val email: String? = null,
+    /** Display name: the BambooKit nickname when set, else the sign-in provider's name. */
     val name: String? = null,
+    /** The BambooKit nickname (PATCH /v1/me); null when none was chosen. */
+    val nickname: String? = null,
     val avatarUrl: String? = null,
     val avatarStored: Boolean = false,
     /** "email", "google" or "other". */
@@ -85,6 +88,8 @@ data class Session(
     val currentAction: String? = null,
     val changes: ChangeSummary = ChangeSummary(),
     val pendingApprovals: Int = 0,
+    /** True once the session was continued on the PC ("Continue on PC"); only then may the phone chat in it. */
+    val remote: Boolean = false,
     val createdAt: String? = null,
     val updatedAt: String? = null,
 ) {
@@ -119,11 +124,33 @@ data class Approval(
     val patterns: List<String> = emptyList(),
     val status: String = "",
     val reply: String? = null,
+    /** "permission" (run a command, edit files…) or "question" (the agent asks you to choose or type an answer). */
+    val kind: String = "permission",
+    /** Question requests only: what the agent asks. */
+    val questions: List<QuestionSpec>? = null,
+    /** Question requests only, once answered: one list of chosen labels (or typed text) per question. */
+    val answers: List<List<String>>? = null,
     val createdAt: String? = null,
     val resolvedAt: String? = null,
 ) {
     val isPending get() = status == "PENDING" || status == "RESPONDING"
+    val isQuestion get() = kind == "question"
 }
+
+/** One question of a question request. [multiple]: several options may be chosen. [custom]: typed answers allowed unless false. */
+@Serializable
+data class QuestionSpec(
+    val header: String? = null,
+    val question: String = "",
+    val options: List<QuestionOption> = emptyList(),
+    val multiple: Boolean? = null,
+    val custom: Boolean? = null,
+) {
+    val allowsMultiple get() = multiple == true
+    val allowsCustom get() = custom != false
+}
+
+@Serializable data class QuestionOption(val label: String = "", val description: String? = null)
 
 @Serializable
 data class Command(

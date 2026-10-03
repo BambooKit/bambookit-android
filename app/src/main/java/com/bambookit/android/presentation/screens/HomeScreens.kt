@@ -283,7 +283,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
             item {
                 Banner(
-                    "Sessions run in BambooKit Desktop on your PC. This phone shows them live (view only) and lets you stop an agent or answer approvals.",
+                    "Sessions run in BambooKit Desktop on your PC. Open one to follow it live, answer the agent's requests, or tap Continue on PC to chat in it from here.",
                     Icons.Filled.DesktopWindows, color = TextSecondary, tint = BambooSurfaceElevated,
                     modifier = Modifier.padding(top = Space.xs),
                 )
@@ -351,15 +351,24 @@ private fun ProjectHeader(p: Project, pc: Device?) {
 
 @Composable
 fun ApprovalsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
-    val approvals by store.approvals.collectAsState()
+    val all by store.approvals.collectAsState()
+    val approvals = all.filter { it.isPending }
     val devices by store.devices.collectAsState()
     val loaded by store.loaded.collectAsState()
+    val error by store.error.collectAsState()
     val refreshing by store.refreshing.collectAsState()
     RefreshBox(refreshing = refreshing, onRefresh = { store.refreshAll() }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
-            if (!loaded && approvals.isEmpty()) item { LoadingState("Loading approvals…") }
+            if (!loaded && approvals.isEmpty() && error != null) item {
+                ErrorState("Couldn't load requests", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing)
+            } else if (!loaded && approvals.isEmpty()) item { LoadingState("Loading requests…") }
             else if (approvals.isEmpty()) item {
-                EmptyState("All clear", "When an agent asks for permission to run a command or edit files, you can answer here.", Icons.Filled.VerifiedUser)
+                EmptyState(
+                    "Nothing waiting for you",
+                    "Requests appear here when the agent asks before running commands or editing files, or asks you a question. " +
+                        "You'll also get a notification.",
+                    Icons.Filled.VerifiedUser,
+                )
             }
             items(approvals, key = { it.id }) { a ->
                 Spacer(Modifier.height(Space.s))
@@ -368,53 +377,4 @@ fun ApprovalsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
             item { BottomSpacer() }
         }
     }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun ApprovalCard(a: Approval, store: BambooStore, pcName: String? = null, onOpen: (() -> Unit)? = null) {
-    BkCard(onClick = onOpen, border = StatusWarning.copy(alpha = 0.45f)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconTile(Icons.Filled.Shield, tint = StatusWarning, background = StatusWarningTint, size = 34.dp)
-            Spacer(Modifier.width(Space.m))
-            Column(Modifier.weight(1f)) {
-                Text("Permission request", color = StatusWarning, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    listOfNotNull(a.projectName, a.sessionTitle, pcName).joinToString(" · ").ifBlank { "Session" },
-                    color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text(relative(a.createdAt), color = TextMuted, fontSize = 11.sp)
-        }
-        Spacer(Modifier.height(Space.m))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { Chip(a.permission, TextPrimary, icon = Icons.Filled.Bolt) }
-        (a.title ?: a.patterns.joinToString("\n")).takeIf { it.isNotBlank() }?.let {
-            Spacer(Modifier.height(Space.s))
-            Mono(it, color = TextPrimary, size = 12, maxLines = 6, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(CodeBlockBackground).padding(10.dp))
-        }
-        Spacer(Modifier.height(Space.m))
-        if (a.status == "RESPONDING") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(14.dp), color = StatusRunning, strokeWidth = 2.dp)
-                Spacer(Modifier.width(Space.s))
-                Text("Sent \"${replyLabel(a.reply)}\" — waiting for the agent on your PC…", color = TextSecondary, fontSize = 12.sp)
-            }
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = { store.respond(a, "reject") }, modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusFailed), contentPadding = PaddingValues(horizontal = 8.dp),
-                ) { Text("Reject") }
-                OutlinedButton(onClick = { store.respond(a, "always") }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Always") }
-                Button(onClick = { store.respond(a, "once") }, modifier = Modifier.weight(1.3f), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Approve once") }
-            }
-        }
-    }
-}
-
-private fun replyLabel(reply: String?) = when (reply) {
-    "once" -> "Approve once"
-    "always" -> "Always"
-    "reject" -> "Reject"
-    else -> reply ?: "reply"
 }

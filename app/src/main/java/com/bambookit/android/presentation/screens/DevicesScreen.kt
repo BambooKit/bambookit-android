@@ -132,6 +132,8 @@ fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pai
                 SectionTitle("App updates")
                 BkCard { UpdateCard(updater) }
                 SectionTitle("Settings")
+                NotificationSettings()
+                Spacer(Modifier.height(Space.s))
                 AppLockSetting(appLock)
                 SectionTitle("Account")
                 BkCard(onClick = onProfile) {

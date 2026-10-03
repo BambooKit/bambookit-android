@@ -224,6 +224,10 @@ fun ProfileScreen(store: BambooStore, onBack: () -> Unit, onSignOut: () -> Unit)
                     }
                 }
                 if (account != null) item {
+                    SectionTitle("Nickname")
+                    BkCard { NicknameEditor(store, account) }
+                }
+                if (account != null) item {
                     SectionTitle("Account")
                     BkCard {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

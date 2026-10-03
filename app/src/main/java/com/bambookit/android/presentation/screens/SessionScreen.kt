@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -154,7 +155,7 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                     SessionTabId.Timeline -> HistoryGate(d, pcTitle, store::reloadSession) { data ->
                         TimelinePane(
                             data, approvals, focusPrompt, onFocusDone = { focusPrompt = null }, onOpenFile = store::openFile,
-                            approvalActions = { a -> ApprovalButtons { reply -> store.respond(a, reply) } },
+                            approvalActions = { a -> RequestActions(a, store) },
                         )
                     }
                     SessionTabId.Changes -> HistoryGate(d, pcTitle, store::reloadSession) { data ->
@@ -178,9 +179,31 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                 }
             }
         }
-        if (tab != SessionTabId.Summary && s != null && s.isActive && d != null) {
-            HorizontalDivider(color = BambooBorder)
-            LiveActivity(s, d.commands.lastOrNull(), onStop = { confirmStop = true }, compact = true)
+        val chatTab = tab == SessionTabId.Summary || tab == SessionTabId.Chat
+        if (s != null && d != null) {
+            when {
+                // Chat from the phone once the session is continued on the PC.
+                chatTab && s.remote -> {
+                    HorizontalDivider(color = BambooBorder)
+                    ChatComposer(
+                        d, s, showActivity = tab != SessionTabId.Summary,
+                        onSend = store::sendMessage, onContinue = store::continueSession, onRetry = store::retrySession,
+                        onStop = { confirmStop = true },
+                    )
+                }
+                chatTab -> {
+                    if (tab != SessionTabId.Summary && s.isActive) {
+                        HorizontalDivider(color = BambooBorder)
+                        LiveActivity(s, d.commands.lastOrNull(), onStop = { confirmStop = true }, compact = true)
+                    }
+                    HorizontalDivider(color = BambooBorder)
+                    ContinueOnPcBar(pc, pcTitle, d.continueRequest, onContinue = store::continueOnPc, onDismissError = store::dismissContinueError)
+                }
+                s.isActive -> {
+                    HorizontalDivider(color = BambooBorder)
+                    LiveActivity(s, d.commands.lastOrNull(), onStop = { confirmStop = true }, compact = true)
+                }
+            }
         }
     }
 
@@ -213,19 +236,33 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
 internal fun ContentUnavailable(err: ContentError, pcTitle: String, retrying: Boolean, onRetry: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         ErrorState(
-            title = when (err.code) {
-                "DESKTOP_OFFLINE" -> "$pcTitle is offline"
-                "DESKTOP_TIMEOUT" -> "$pcTitle didn't answer"
-                "NETWORK" -> "Can't reach BambooKit"
-                else -> "Couldn't read this session"
-            },
-            message = err.message,
-            icon = if (err.desktopUnavailable || err.code == "NETWORK") Icons.Filled.CloudOff else Icons.Filled.ErrorOutline,
+            title = errorTitle(err, pcTitle, "Couldn't read this from $pcTitle"),
+            message = errorMessage(err, pcTitle),
+            icon = if (err.desktopUnavailable || err.code == "NETWORK") Icons.Filled.CloudOff else if (err.desktopOutdated) Icons.Filled.SystemUpdate else Icons.Filled.ErrorOutline,
             onRetry = onRetry,
             retrying = retrying,
-            color = if (err.desktopUnavailable) StatusWarning else StatusFailed,
+            color = if (err.desktopUnavailable || err.desktopOutdated || err.timedOut) StatusWarning else StatusFailed,
         )
     }
+}
+
+/** Specific titles for content that could not be read from the PC. */
+internal fun errorTitle(err: ContentError, pcTitle: String, fallback: String): String = when (err.code) {
+    "DESKTOP_OFFLINE" -> "$pcTitle is offline"
+    "DESKTOP_TIMEOUT" -> "$pcTitle didn't answer in time"
+    "TIMEOUT" -> "This is taking too long"
+    "DESKTOP_OUTDATED" -> "Update BambooKit Desktop on your PC"
+    "DESKTOP_ERROR" -> "$pcTitle couldn't do this"
+    "NETWORK" -> "Can't reach BambooKit"
+    else -> fallback
+}
+
+internal fun errorMessage(err: ContentError, pcTitle: String): String = when (err.code) {
+    "DESKTOP_OFFLINE" -> "Project files and chats stay on $pcTitle. Open BambooKit Desktop there, then try again."
+    "DESKTOP_TIMEOUT" -> "$pcTitle is online but didn't answer in time. Large projects can take up to a minute. Tap Retry."
+    "TIMEOUT" -> "No answer from BambooKit in time. Check your connection and tap Retry."
+    "DESKTOP_OUTDATED" -> "The BambooKit Desktop app on $pcTitle is older than this phone app and doesn't know this request yet. Update it, then tap Retry."
+    else -> err.message
 }
 
 /** Shown above content that was read earlier when a later read from the PC failed. */
@@ -279,7 +316,7 @@ private fun Transcript(parts: List<Part>, agent: String?) {
     }
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.m)) {
         item { Spacer(Modifier.height(Space.s)) }
-        if (visible.isEmpty()) item { EmptyState("No messages yet", "Messages in this session will appear here.", Icons.Filled.SmartToy) }
+        if (visible.isEmpty()) item { EmptyState("No messages yet", "Prompts and the agent's replies in this session will appear here.", Icons.Filled.SmartToy) }
         itemsIndexed(visible, key = { _, p -> p.id }) { i, p ->
             val prev = visible.getOrNull(i - 1)
             val newMessage = prev == null || prev.messageId != p.messageId

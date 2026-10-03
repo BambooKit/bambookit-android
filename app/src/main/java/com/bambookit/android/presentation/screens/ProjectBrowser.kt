@@ -69,7 +69,7 @@ fun ProjectPane(d: SessionDetail, pcTitle: String, projectName: String, onLoad: 
         HorizontalDivider(color = BambooBorder)
         val listing = t?.listing
         when {
-            t == null || (listing == null && t.loading) -> LoadingState("Listing ${if (path.isEmpty()) "the project" else path} on $pcTitle…")
+            t == null || (listing == null && t.loading) -> LoadingState("Listing ${if (path.isEmpty()) "the project" else path} on $pcTitle…\nLarge folders can take up to a minute.")
             listing == null && t.error != null -> ContentUnavailable(t.error, pcTitle, t.loading) { onLoad(path) }
             listing == null -> Unit
             else -> SessionRefresh(t.loading, { onLoad(path) }) {
@@ -79,7 +79,7 @@ fun ProjectPane(d: SessionDetail, pcTitle: String, projectName: String, onLoad: 
                     if (t.error != null) item { StaleBanner(t.error, t.loading) { onLoad(path) } }
                     if (listing.truncated) item {
                         Banner(
-                            "Large folder: showing the first ${listing.entries.size} entries.", Icons.Filled.Info,
+                            "Large folder: showing the first ${listing.entries.size} entries. Open the folder on your PC to see everything.", Icons.Filled.Info,
                             color = StatusWarning, tint = StatusWarningTint, modifier = Modifier.padding(horizontal = Space.m).padding(top = Space.s),
                         )
                     }
@@ -101,7 +101,7 @@ fun ProjectPane(d: SessionDetail, pcTitle: String, projectName: String, onLoad: 
                         HorizontalDivider(color = DividerSubtle)
                     }
                     if (listing.entries.isEmpty()) item { EmptyState("Empty folder", "There is nothing in this folder.", Icons.Filled.FolderOpen) }
-                    items(listing.entries, key = { it.path }) { e ->
+                    items(listing.entries.distinctBy { it.path }, key = { it.path }) { e ->
                         EntryRow(e, touched[normPath(e.path)]?.let { it.actions.firstOrNull { a -> a != "read" } ?: "read" }) {
                             if (e.isDirectory) onLoad(e.path) else onOpenFile(e.path)
                         }

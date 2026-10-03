@@ -5,7 +5,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -17,6 +19,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 /**
  * An API error. [code] is the API's machine-readable error code (e.g. DESKTOP_OFFLINE,
@@ -27,6 +30,14 @@ class ApiException(message: String, val status: Int, val code: String) : Excepti
     val isDesktopUnavailable get() = code == "DESKTOP_OFFLINE" || code == "DESKTOP_TIMEOUT"
 }
 
+/**
+ * Relay calls (tree, file, diagram, file map, history, file versions) wait for the PC: the API allows up to
+ * 60 s for whole-project walks (diagram, tree), plus time for the hosted API to wake. The read timeout must
+ * stay above that or OkHttp gives up before the API answers with the PC's result or DESKTOP_TIMEOUT.
+ */
+const val RELAY_READ_TIMEOUT_S = 75L
+const val RELAY_CALL_TIMEOUT_S = 120L
+
 /** Typed client for bambookit-api. Every call is authenticated with the user's session. */
 class ApiClient(
     private val http: OkHttpClient,
@@ -34,13 +45,18 @@ class ApiClient(
     private val store: SecureStore,
     private val json: Json,
 ) {
-    private suspend fun <T> call(method: String, path: String, body: JsonElement?, serializer: KSerializer<T>): T = withContext(Dispatchers.IO) {
-        val text = execute(method, path, body, refreshed = false) ?: execute(method, path, body, refreshed = true)!!
+    private val relayHttp: OkHttpClient = http.newBuilder()
+        .readTimeout(RELAY_READ_TIMEOUT_S, TimeUnit.SECONDS)
+        .callTimeout(RELAY_CALL_TIMEOUT_S, TimeUnit.SECONDS)
+        .build()
+
+    private suspend fun <T> call(method: String, path: String, body: JsonElement?, serializer: KSerializer<T>, client: OkHttpClient = http): T = withContext(Dispatchers.IO) {
+        val text = execute(client, method, path, body, refreshed = false) ?: execute(client, method, path, body, refreshed = true)!!
         json.decodeFromString(serializer, text)
     }
 
     /** Returns the response body, or null if the token was rejected and a refresh should be tried. */
-    private suspend fun execute(method: String, path: String, body: JsonElement?, refreshed: Boolean): String? {
+    private suspend fun execute(client: OkHttpClient, method: String, path: String, body: JsonElement?, refreshed: Boolean): String? {
         val attempt = if (refreshed) 1 else 0
         run {
             val token = auth.accessToken(forceRefresh = attempt > 0)
@@ -49,7 +65,10 @@ class ApiClient(
             val requestBody = body?.toString()?.toRequestBody("application/json".toMediaType())
             builder.method(method, requestBody ?: if (method == "POST" || method == "PATCH") "{}".toRequestBody("application/json".toMediaType()) else null)
             val response = try {
-                http.newCall(builder.build()).execute()
+                client.newCall(builder.build()).execute()
+            } catch (e: java.io.InterruptedIOException) {
+                // OkHttp read/call timeout: the API (or the PC behind it) took too long.
+                throw ApiException("BambooKit took too long to answer. Try again.", 0, "TIMEOUT")
             } catch (e: Exception) {
                 throw ApiException(unreachableMessage(), 0, "NETWORK")
             }
@@ -70,6 +89,9 @@ class ApiClient(
     }
 
     private suspend inline fun <reified T> get(path: String): T = call("GET", path, null, Envelope.serializer(kotlinx.serialization.serializer<T>())).data
+    /** GET through the long-timeout client: the API waits for the PC to answer. */
+    private suspend inline fun <reified T> relayGet(path: String): T =
+        call("GET", path, null, Envelope.serializer(kotlinx.serialization.serializer<T>()), relayHttp).data
     private suspend inline fun <reified T> post(path: String, body: JsonElement = JsonObject(emptyMap())): T =
         call("POST", path, body, Envelope.serializer(kotlinx.serialization.serializer<T>())).data
 
@@ -79,20 +101,20 @@ class ApiClient(
     suspend fun projects(): List<Project> = get("/v1/projects")
     suspend fun sessions(projectId: String? = null): List<Session> = get("/v1/sessions" + (projectId?.let { "?projectId=$it" } ?: ""))
     suspend fun session(id: String): Session = get("/v1/sessions/$id")
-    suspend fun parts(sessionId: String): List<Part> = get("/v1/sessions/$sessionId/parts")
-    suspend fun changes(sessionId: String): List<ChangedFile> = get("/v1/sessions/$sessionId/changes")
-    suspend fun fileMap(sessionId: String): List<FileMapEntry> = get("/v1/sessions/$sessionId/filemap")
-    /** Null when the PC answered without a diagram. */
-    suspend fun diagram(sessionId: String): ProjectDiagram? = get("/v1/sessions/$sessionId/diagram")
+    suspend fun parts(sessionId: String): List<Part> = relayGet("/v1/sessions/$sessionId/parts")
+    suspend fun changes(sessionId: String): List<ChangedFile> = relayGet("/v1/sessions/$sessionId/changes")
+    suspend fun fileMap(sessionId: String): List<FileMapEntry> = relayGet("/v1/sessions/$sessionId/filemap")
+    /** Null when the PC answered without a diagram. Can take up to a minute for large projects. */
+    suspend fun diagram(sessionId: String): ProjectDiagram? = relayGet("/v1/sessions/$sessionId/diagram")
     /** One folder of the session's project; "" is the project root. */
-    suspend fun tree(sessionId: String, path: String): TreeListing = get("/v1/sessions/$sessionId/tree?path=${query(path)}")
+    suspend fun tree(sessionId: String, path: String): TreeListing = relayGet("/v1/sessions/$sessionId/tree?path=${query(relayPath(path))}")
     /** A project file's text (view only). */
-    suspend fun file(sessionId: String, path: String): FileContent = get("/v1/sessions/$sessionId/file?path=${query(path)}")
+    suspend fun file(sessionId: String, path: String): FileContent = relayGet("/v1/sessions/$sessionId/file?path=${query(relayPath(path))}")
 
-    /** Prompts, timeline, changed files with patches, tests and summary — live from the PC or its 7-day cloud copy. */
-    suspend fun history(sessionId: String): HistoryResponse = get("/v1/sessions/$sessionId/history")
-    /** One file before and after the session (live from the PC only). */
-    suspend fun fileVersions(sessionId: String, path: String): FileVersions = get("/v1/sessions/$sessionId/file-versions?path=${query(path)}")
+    /** Prompts, timeline, changed files with patches, tests and summary: live from the PC or its 7-day cloud copy. */
+    suspend fun history(sessionId: String): HistoryResponse = relayGet("/v1/sessions/$sessionId/history")
+    /** One file before and after the session (live from the PC only). The path must match the history's change entry exactly. */
+    suspend fun fileVersions(sessionId: String, path: String): FileVersions = relayGet("/v1/sessions/$sessionId/file-versions?path=${query(path)}")
 
     private fun query(value: String) = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
     suspend fun approvals(pendingOnly: Boolean = true): List<Approval> = get("/v1/approvals" + if (pendingOnly) "?status=PENDING" else "")
@@ -128,6 +150,19 @@ class ApiClient(
 
     suspend fun respondApproval(id: String, reply: String) {
         call("POST", "/v1/approvals/$id/respond", buildJsonObject { put("reply", reply) }, JsonObject.serializer())
+    }
+
+    /** Answers a question request: one list of chosen labels (or typed text) per question. */
+    suspend fun answerApproval(id: String, answers: List<List<String>>) {
+        call("POST", "/v1/approvals/$id/answer", answerPayload(answers), JsonObject.serializer())
+    }
+
+    /** Sets the BambooKit nickname (1-40 characters) and returns the updated profile. */
+    suspend fun updateNickname(name: String): Account =
+        call("PATCH", "/v1/me", buildJsonObject { put("name", name) }, Envelope.serializer(Account.serializer())).data
+
+    suspend fun markRead(notificationId: String) {
+        post<JsonObject>("/v1/notifications/$notificationId/read")
     }
 
     suspend fun unlink(desktopId: String, phoneId: String) {
@@ -189,6 +224,19 @@ class ApiClient(
     }
 
     companion object {
+        /** Body of POST /v1/approvals/:id/answer. */
+        fun answerPayload(answers: List<List<String>>): JsonObject = buildJsonObject {
+            put("answers", JsonArray(answers.map { list -> JsonArray(list.map { JsonPrimitive(it) }) }))
+        }
+
+        /**
+         * Project paths go to the PC with "/" separators (Windows paths from the session history may use
+         * backslashes; the PC accepts "/" on every OS). A leading "./" and trailing "/" are dropped.
+         * Absolute paths ("/home/me/app/x.ts", "C:/proj/x.ts") stay absolute: the PC maps them into the project.
+         */
+        fun relayPath(path: String): String =
+            path.trim().replace('\\', '/').removePrefix("./").let { if (it.length > 1) it.trimEnd('/') else it }
+
         /** Human-readable reason the API could not be reached. */
         fun unreachableMessage(): String =
             if (Config.apiUrl.contains("127.0.0.1") || Config.apiUrl.contains("localhost"))

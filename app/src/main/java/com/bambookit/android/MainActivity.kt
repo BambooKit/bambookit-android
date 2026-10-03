@@ -60,6 +60,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.bambookit.android.data.ApiException
+import com.bambookit.android.data.BambooNotifier
+import com.bambookit.android.presentation.screens.NotificationsOffBanner
+import com.bambookit.android.presentation.screens.ProfileSetupSheet
+import androidx.compose.ui.platform.LocalContext
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.presentation.screens.ApprovalsScreen
 import com.bambookit.android.presentation.screens.ConnectionBanner
@@ -169,6 +173,8 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     val approvals by store.approvals.collectAsState()
 
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val context = LocalContext.current
+    var setupDone by rememberSaveable { mutableStateOf(false) }
 
     fun claim(token: String) {
         pairStatus = "Pairing…"
@@ -203,12 +209,32 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     LaunchedEffect(session?.userId) {
         if (session != null) {
             store.start()
-            if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            // Keeps the connection (and notifications) going after the app is left, when enabled in Settings.
+            ConnectionService.sync(context)
+        }
+    }
+    // The one-time "Set up your profile" sheet, for accounts without a name.
+    val account = profile.account
+    val userId = session?.userId
+    val showSetup = !setupDone && userId != null && account != null && account.name.isNullOrBlank() && !app.secure.profileSetupOffered(userId)
+    // Ask for notification permission once (Android 13+), after the profile sheet, when the workspace has loaded.
+    val loaded by store.loaded.collectAsState()
+    LaunchedEffect(loaded, showSetup, userId) {
+        if (Build.VERSION.SDK_INT >= 33 && loaded && userId != null && !showSetup && account != null && !app.secure.notificationPromptShown && !app.notifier.canPost()) {
+            app.secure.notificationPromptShown = true
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
     LaunchedEffect(intent) {
         val i = intent ?: return@LaunchedEffect
-        i.getStringExtra("sessionId")?.let { openSession = it; showProfile = false }
+        // Notification taps: open the session (its pending requests are on the Summary), or the Approvals tab.
+        i.getStringExtra(BambooNotifier.EXTRA_NOTIFICATION_ID)?.let { store.markRead(it) }
+        val sessionId = i.getStringExtra(BambooNotifier.EXTRA_SESSION_ID)
+        val approvalId = i.getStringExtra(BambooNotifier.EXTRA_APPROVAL_ID)
+        when {
+            sessionId != null -> { openSession = sessionId; showProfile = false }
+            approvalId != null -> { openSession = null; showProfile = false; tab = Tab.Approvals }
+        }
         pairingToken(i.dataString)?.let { pendingPairToken = it }
         incoming.value = null
     }
@@ -279,6 +305,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                     IconButton(onClick = { showProfile = true }) { Avatar(store, profile.account?.avatarUrl, accountName ?: accountEmail, 30.dp) }
                 }
                 ConnectionBanner(store)
+                if (tab == Tab.Home) NotificationsOffBanner()
                 UpdateBanner(app.updater)
                 Box(Modifier.weight(1f)) {
                     when (tab) {
@@ -293,6 +320,12 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                 }
             }
         }
+    }
+    if (showSetup && account != null && userId != null) {
+        ProfileSetupSheet(store, account, onClose = {
+            app.secure.markProfileSetupOffered(userId)
+            setupDone = true
+        })
     }
 }
 
@@ -318,7 +351,7 @@ private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: ()
         )
         Tab.Approvals -> {
             val pending = approvals.count { it.isPending }
-            ScreenTopBar("Approvals", if (!loaded) "Permission requests" else if (pending > 0) "$pending waiting for you" else "Nothing waiting", actions = { profileButton() })
+            ScreenTopBar("Approvals", if (!loaded) "Approvals and questions from the agent" else if (pending > 0) "$pending waiting for you" else "Nothing waiting", actions = { profileButton() })
         }
         Tab.Devices -> ScreenTopBar(
             "Devices", account,
