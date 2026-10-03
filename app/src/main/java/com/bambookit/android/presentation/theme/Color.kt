@@ -32,6 +32,35 @@ val NeutralTint = TextMuted.copy(alpha = 0.18f)
 
 val DiffAddedLine = StatusSuccess.copy(alpha = 0.13f)
 val DiffRemovedLine = StatusFailed.copy(alpha = 0.13f)
+
+// GitHub-style unified diff (File change screen).
+val DiffAddedBg = DiffAddedLine
+val DiffAddedText = StatusSuccess
+val DiffAddedGutter = StatusSuccess.copy(alpha = 0.22f)
+val DiffRemovedBg = DiffRemovedLine
+val DiffRemovedText = StatusFailed
+val DiffRemovedGutter = StatusFailed.copy(alpha = 0.22f)
+val DiffContextText = TextSecondary
+val DiffHunk = StatusRunning
+val DiffHunkBg = StatusRunning.copy(alpha = 0.10f)
+
+// Change-status badges (M / A / D / R).
+val ChangeModified = StatusWarning
+val ChangeModifiedTint = StatusWarningTint
+val ChangeAdded = StatusSuccess
+val ChangeAddedTint = StatusSuccessTint
+val ChangeDeleted = StatusFailed
+val ChangeDeletedTint = StatusFailedTint
+val ChangeRenamed = Color(0xFF93C9C4)
+val ChangeRenamedTint = ChangeRenamed.copy(alpha = 0.14f)
+
+// Session timeline rail.
+val TimelineRail = BambooBorderStrong
+
+// App lock and profile.
+val LockScrim = BambooObsidian
+val AvatarRing = BambooBorderStrong
+val DangerTint = StatusFailedTint
 val Transparent = Color.Transparent
 
 /** Chat bubble for messages you sent; assistant replies sit on the plain ground. */

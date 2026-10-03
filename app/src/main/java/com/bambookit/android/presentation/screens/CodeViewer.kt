@@ -284,77 +284,29 @@ private data class Match(val line: Int, val start: Int)
  */
 @Composable
 fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: () -> Unit) {
+    // While App lock is showing, dialogs (separate windows) are not drawn over it.
+    if (LocalAppLocked.current) return
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(BambooObsidian).imePadding()) {
             val content = view.content
-            val lines = remember(content) { content?.split("\r\n", "\n").orEmpty() }
+            val lineCount = remember(content) { content?.let { lineCountOf(it) } }
             var searching by remember { mutableStateOf(false) }
-            var query by remember { mutableStateOf("") }
-            var current by remember { mutableIntStateOf(0) }
-            var menu by remember { mutableStateOf(false) }
-            val clipboard = LocalClipboardManager.current
-            val context = LocalContext.current
-            fun toast(text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 
             ScreenTopBar(
                 title = view.path.substringAfterLast('/').substringAfterLast('\\'),
                 subtitle = listOfNotNull(
                     "Read only",
                     view.size?.let { formatSize(it) },
-                    content?.let { plural(lines.size, "line") },
+                    lineCount?.let { plural(it, "line") },
                     view.path,
                 ).joinToString(" · "),
                 navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close") } },
                 actions = {
-                    if (content != null) IconButton(onClick = { searching = !searching; if (!searching) query = "" }) { Icon(Icons.Filled.Search, "Find in file") }
-                    Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = BambooSurfaceElevated) {
-                            DropdownMenuItem(
-                                text = { Text("Copy path") }, leadingIcon = { Icon(Icons.Filled.Link, null) },
-                                onClick = { menu = false; clipboard.setText(AnnotatedString(view.path)); toast("Path copied") },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Copy all") }, leadingIcon = { Icon(Icons.Filled.ContentCopy, null) }, enabled = content != null,
-                                onClick = {
-                                    menu = false
-                                    if (content != null) {
-                                        if (content.length > 500_000) toast("This file is too large to copy on the phone")
-                                        else runCatching { clipboard.setText(AnnotatedString(content)) }
-                                            .onSuccess { toast("Copied ${plural(lines.size, "line")}") }
-                                            .onFailure { toast("Could not copy this file") }
-                                    }
-                                },
-                            )
-                        }
-                    }
+                    if (content != null) IconButton(onClick = { searching = !searching }) { Icon(Icons.Filled.Search, "Find in file") }
+                    CodeMenu(view.path, content)
                 },
             )
             HorizontalDivider(color = BambooBorder)
-
-            val matches = remember(lines, query) {
-                if (query.isEmpty()) emptyList()
-                else buildList {
-                    lines.forEachIndexed { li, line ->
-                        var from = line.indexOf(query, 0, ignoreCase = true)
-                        while (from >= 0 && size < 5000) {
-                            add(Match(li, from))
-                            from = line.indexOf(query, from + max(1, query.length), ignoreCase = true)
-                        }
-                    }
-                }
-            }
-            LaunchedEffect(matches) { current = 0 }
-
-            if (searching && content != null) {
-                SearchBar(
-                    query = query, onQuery = { query = it },
-                    counter = when { query.isEmpty() -> ""; matches.isEmpty() -> "No matches"; else -> "${current + 1}/${matches.size}${if (matches.size >= 5000) "+" else ""}" },
-                    onPrev = { if (matches.isNotEmpty()) current = (current - 1 + matches.size) % matches.size },
-                    onNext = { if (matches.isNotEmpty()) current = (current + 1) % matches.size },
-                    onClose = { searching = false; query = "" },
-                )
-            }
 
             when {
                 view.loading -> LoadingState("Opening the file on $pcTitle…")
@@ -371,10 +323,80 @@ fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: ()
                     color = if (view.error.desktopUnavailable) StatusWarning else StatusFailed,
                 )
                 content == null -> Unit
-                content.isEmpty() -> EmptyState("Empty file", "This file has no content.", Icons.Filled.Description)
-                else -> CodeLines(view.path, lines, content.length, matches, current, query.length)
+                else -> CodeContent(view.path, content, searching, onCloseSearch = { searching = false })
             }
         }
+    }
+}
+
+private fun lineCountOf(content: String) = if (content.isEmpty()) 0 else content.count { it == '\n' } + 1
+
+/** "More" menu of a code view: copy path, copy all. */
+@Composable
+internal fun CodeMenu(path: String, content: String?) {
+    var menu by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    fun toast(text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+    Box {
+        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = BambooSurfaceElevated) {
+            DropdownMenuItem(
+                text = { Text("Copy path") }, leadingIcon = { Icon(Icons.Filled.Link, null) },
+                onClick = { menu = false; clipboard.setText(AnnotatedString(path)); toast("Path copied") },
+            )
+            DropdownMenuItem(
+                text = { Text("Copy all") }, leadingIcon = { Icon(Icons.Filled.ContentCopy, null) }, enabled = content != null,
+                onClick = {
+                    menu = false
+                    if (content != null) {
+                        if (content.length > 500_000) toast("This file is too large to copy on the phone")
+                        else runCatching { clipboard.setText(AnnotatedString(content)) }
+                            .onSuccess { toast("Copied ${plural(lineCountOf(content), "line")}") }
+                            .onFailure { toast("Could not copy this file") }
+                    }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Read-only text of one file: line numbers, syntax highlighting, horizontal scrolling and (when
+ * [searching]) a find bar. Shared by the code viewer and the Before/After views of a changed file.
+ */
+@Composable
+internal fun CodeContent(path: String, content: String, searching: Boolean, onCloseSearch: () -> Unit) {
+    val lines = remember(content) { content.split("\r\n", "\n") }
+    var query by remember { mutableStateOf("") }
+    var current by remember { mutableIntStateOf(0) }
+    LaunchedEffect(searching) { if (!searching) query = "" }
+    val matches = remember(lines, query) {
+        if (query.isEmpty()) emptyList()
+        else buildList {
+            lines.forEachIndexed { li, line ->
+                var from = line.indexOf(query, 0, ignoreCase = true)
+                while (from >= 0 && size < 5000) {
+                    add(Match(li, from))
+                    from = line.indexOf(query, from + max(1, query.length), ignoreCase = true)
+                }
+            }
+        }
+    }
+    LaunchedEffect(matches) { current = 0 }
+
+    Column(Modifier.fillMaxSize()) {
+        if (searching) {
+            SearchBar(
+                query = query, onQuery = { query = it },
+                counter = when { query.isEmpty() -> ""; matches.isEmpty() -> "No matches"; else -> "${current + 1}/${matches.size}${if (matches.size >= 5000) "+" else ""}" },
+                onPrev = { if (matches.isNotEmpty()) current = (current - 1 + matches.size) % matches.size },
+                onNext = { if (matches.isNotEmpty()) current = (current + 1) % matches.size },
+                onClose = onCloseSearch,
+            )
+        }
+        if (content.isEmpty()) EmptyState("Empty file", "This file has no content.", Icons.Filled.Description)
+        else CodeLines(path, lines, content.length, matches, current, query.length)
     }
 }
 

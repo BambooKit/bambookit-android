@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Window colours before Compose draws, so launch never flashes white. -->
-    <style name="Theme.BambooKit" parent="@android:style/Theme.Material.NoActionBar">
+    <style name="Theme.BambooKit" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@color/bk_background</item>
         <item name="android:statusBarColor">@color/bk_background</item>
         <item name="android:navigationBarColor">@color/bk_background</item>

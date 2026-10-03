@@ -24,8 +24,8 @@ android {
         applicationId = "com.bambookit.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -106,6 +106,11 @@ dependencies {
     implementation(libs.androidx.browser)
     implementation(libs.zxing.embedded)
     implementation(libs.zxing.core)
+    // App lock: BiometricPrompt (fingerprint/face or the phone's PIN/pattern). Needs a FragmentActivity and an
+    // AppCompat theme (the pre-Android 9 fingerprint dialog is an AppCompat dialog).
+    implementation(libs.androidx.biometric)
+    implementation(libs.androidx.fragment.ktx)
+    implementation(libs.androidx.appcompat)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

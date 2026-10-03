@@ -5,7 +5,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import com.bambookit.android.presentation.screens.AppLockScreen
+import com.bambookit.android.presentation.screens.Avatar
+import com.bambookit.android.presentation.screens.LocalAppLocked
+import com.bambookit.android.presentation.screens.ProfileScreen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -78,7 +84,8 @@ import java.time.LocalTime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
+/** A FragmentActivity so Android's BiometricPrompt (App lock) can attach to it. */
+class MainActivity : FragmentActivity() {
     private val incoming = MutableStateFlow<Intent?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,7 +93,18 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         incoming.value = intent
         val app = application as BambooKitApp
-        setContent { BambooKitTheme { Root(app, incoming) } }
+        setContent { BambooKitTheme { AppShell(app, incoming) } }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        (application as BambooKitApp).lock.onForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Rotation and other configuration changes are not "leaving the app".
+        if (!isChangingConfigurations) (application as BambooKitApp).lock.onBackground()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -111,6 +129,30 @@ fun pairingToken(raw: String?): String? {
     return uri.getQueryParameter("t")?.takeIf { it.length >= 20 }
 }
 
+/** The app plus the App lock overlay, which covers everything (and hides it from accessibility) while locked. */
+@Composable
+private fun AppShell(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
+    val locked by app.lock.locked.collectAsState()
+    val session by app.auth.session.collectAsState()
+    var sawSignedOut by rememberSaveable { mutableStateOf(false) }
+    val signedIn = session != null
+    // Signing in is itself proof of identity: don't ask again right after a sign-in in this run.
+    LaunchedEffect(signedIn) {
+        if (!signedIn) sawSignedOut = true
+        else if (sawSignedOut) {
+            app.lock.unlock()
+            sawSignedOut = false
+        }
+    }
+    val showLock = locked && signedIn
+    CompositionLocalProvider(LocalAppLocked provides showLock) {
+        Box(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().then(if (showLock) Modifier.clearAndSetSemantics { } else Modifier)) { Root(app, incoming) }
+            if (showLock) AppLockScreen(app.lock)
+        }
+    }
+}
+
 @Composable
 private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     val store = app.store
@@ -120,6 +162,8 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
     var openSession by rememberSaveable { mutableStateOf<String?>(null) }
+    var showProfile by rememberSaveable { mutableStateOf(false) }
+    val profile by store.profile.collectAsState()
     var pairStatus by remember { mutableStateOf<String?>(null) }
     var pendingPairToken by remember { mutableStateOf<String?>(null) }
     val approvals by store.approvals.collectAsState()
@@ -164,7 +208,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     }
     LaunchedEffect(intent) {
         val i = intent ?: return@LaunchedEffect
-        i.getStringExtra("sessionId")?.let { openSession = it }
+        i.getStringExtra("sessionId")?.let { openSession = it; showProfile = false }
         pairingToken(i.dataString)?.let { pendingPairToken = it }
         incoming.value = null
     }
@@ -179,15 +223,23 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     LaunchedEffect(Unit) { store.messages.collect { snackbar.showSnackbar(it) } }
 
     if (session == null) {
+        LaunchedEffect(Unit) {
+            showProfile = false
+            // Also when the sign-in expired on its own: stop realtime and clear this phone's signed-in state,
+            // so the next sign-in starts cleanly.
+            store.signOut(keepPendingSignIn = true)
+        }
         LoginScreen(app.auth, onGoogle = {}, googleAvailable = false)
         return
     }
+    val accountName = profile.account?.name ?: session?.name
+    val accountEmail = profile.account?.email ?: session?.email
 
     Scaffold(
         containerColor = BambooObsidian,
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            if (openSession == null) Column {
+            if (openSession == null && !showProfile) Column {
                 HorizontalDivider(color = BambooBorder)
                 NavigationBar(containerColor = BambooSurface) {
                     Tab.entries.forEach { t ->
@@ -218,10 +270,14 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             val current = openSession
-            if (current != null) {
+            if (showProfile) {
+                ProfileScreen(store, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } })
+            } else if (current != null) {
                 SessionScreen(store, current, onBack = { openSession = null })
             } else Column(Modifier.fillMaxSize()) {
-                TabTopBar(tab, store, account = session?.name ?: session?.email, onScan = ::scan)
+                TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan) {
+                    IconButton(onClick = { showProfile = true }) { Avatar(store, profile.account?.avatarUrl, accountName ?: accountEmail, 30.dp) }
+                }
                 ConnectionBanner(store)
                 UpdateBanner(app.updater)
                 Box(Modifier.weight(1f)) {
@@ -229,7 +285,10 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                         Tab.Home -> HomeScreen(store, onOpenSession = { openSession = it }, onPair = ::scan, onApprovals = { tab = Tab.Approvals })
                         Tab.Projects -> ProjectsScreen(store, onOpenSession = { openSession = it })
                         Tab.Approvals -> ApprovalsScreen(store, onOpenSession = { openSession = it })
-                        Tab.Devices -> DevicesScreen(store, app.updater, pairStatus, onScan = ::scan, onSignOut = { scope.launch { store.signOut() } })
+                        Tab.Devices -> DevicesScreen(
+                            store, app.updater, app.lock, pairStatus, onScan = ::scan, onProfile = { showProfile = true },
+                            onSignOut = { scope.launch { store.signOut() } },
+                        )
                     }
                 }
             }
@@ -238,7 +297,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
 }
 
 @Composable
-private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: () -> Unit) {
+private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: () -> Unit, profileButton: @Composable () -> Unit) {
     val projects by store.projects.collectAsState()
     val sessions by store.sessions.collectAsState()
     val approvals by store.approvals.collectAsState()
@@ -250,13 +309,23 @@ private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: ()
             ScreenTopBar(
                 "BambooKit", greeting + (account?.substringBefore('@')?.let { ", $it" } ?: ""),
                 titleLeading = { Image(painterResource(R.drawable.bambookit_mark), null, Modifier.size(32.dp).clip(RoundedCornerShape(9.dp))) },
+                actions = { profileButton() },
             )
         }
-        Tab.Projects -> ScreenTopBar("Projects", if (loaded) "${plural(projects.size, "project")} · ${plural(sessions.size, "session")}" else "From your PCs")
+        Tab.Projects -> ScreenTopBar(
+            "Projects", if (loaded) "${plural(projects.size, "project")} · ${plural(sessions.size, "session")}" else "From your PCs",
+            actions = { profileButton() },
+        )
         Tab.Approvals -> {
             val pending = approvals.count { it.isPending }
-            ScreenTopBar("Approvals", if (!loaded) "Permission requests" else if (pending > 0) "$pending waiting for you" else "Nothing waiting")
+            ScreenTopBar("Approvals", if (!loaded) "Permission requests" else if (pending > 0) "$pending waiting for you" else "Nothing waiting", actions = { profileButton() })
         }
-        Tab.Devices -> ScreenTopBar("Devices", account, actions = { IconButton(onClick = onScan) { Icon(Icons.Filled.QrCodeScanner, "Scan QR code") } })
+        Tab.Devices -> ScreenTopBar(
+            "Devices", account,
+            actions = {
+                IconButton(onClick = onScan) { Icon(Icons.Filled.QrCodeScanner, "Scan QR code") }
+                profileButton()
+            },
+        )
     }
 }

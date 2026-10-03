@@ -11,6 +11,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.bambookit.android.data.AppLock
 import com.bambookit.android.data.AppUpdater
 import com.bambookit.android.data.ApiClient
 import com.bambookit.android.data.AuthRepository
@@ -32,6 +33,8 @@ class BambooKitApp : Application() {
         private set
     lateinit var updater: AppUpdater
         private set
+    lateinit var lock: AppLock
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -39,6 +42,7 @@ class BambooKitApp : Application() {
         // Generous timeouts: the hosted API can take 20-50 s to wake from sleep on the free plan.
         val http = OkHttpClient.Builder().connectTimeout(60, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
         val secure = SecureStore(this)
+        lock = AppLock(this, secure)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         auth = AuthRepository(http, secure, json)
         val api = ApiClient(http, auth, secure, json)

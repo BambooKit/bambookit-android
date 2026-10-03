@@ -5,8 +5,36 @@ import kotlinx.serialization.json.JsonElement
 
 @Serializable data class Envelope<T>(val data: T)
 
+/** GET /v1/me. Every field is optional so older or newer API versions still decode. */
 @Serializable
-data class Account(val id: String, val email: String? = null, val name: String? = null, val avatarUrl: String? = null)
+data class Account(
+    val id: String = "",
+    val email: String? = null,
+    val name: String? = null,
+    val avatarUrl: String? = null,
+    val avatarStored: Boolean = false,
+    /** "email", "google" or "other". */
+    val provider: String? = null,
+    val emailVerified: Boolean? = null,
+    val createdAt: String? = null,
+    val lastActiveAt: String? = null,
+    val devices: Int? = null,
+    val projects: Int? = null,
+    val cloudStorage: Boolean = false,
+    val accountDeletion: Boolean = false,
+)
+
+/** POST /v1/me/avatar-upload: a short-lived signed PUT URL for a new profile photo. */
+@Serializable
+data class AvatarUpload(
+    val key: String,
+    val url: String,
+    val method: String = "PUT",
+    val headers: Map<String, String> = emptyMap(),
+    val expiresIn: Int? = null,
+)
+
+@Serializable data class AvatarSet(val avatarUrl: String? = null)
 
 @Serializable data class LinkedDevice(val id: String, val name: String, val kind: String, val platform: String)
 
@@ -57,8 +85,6 @@ data class Session(
     val currentAction: String? = null,
     val changes: ChangeSummary = ChangeSummary(),
     val pendingApprovals: Int = 0,
-    /** True once the session was continued on the PC; only then may the phone chat in it. */
-    val remote: Boolean = false,
     val createdAt: String? = null,
     val updatedAt: String? = null,
 ) {
@@ -84,16 +110,17 @@ data class Part(
 @Serializable
 data class Approval(
     val id: String,
-    val deviceId: String,
-    val sessionId: String,
+    val deviceId: String = "",
+    val sessionId: String = "",
     val sessionTitle: String? = null,
     val projectName: String? = null,
-    val permission: String,
+    val permission: String = "",
     val title: String? = null,
     val patterns: List<String> = emptyList(),
-    val status: String,
+    val status: String = "",
     val reply: String? = null,
     val createdAt: String? = null,
+    val resolvedAt: String? = null,
 ) {
     val isPending get() = status == "PENDING" || status == "RESPONDING"
 }
@@ -164,7 +191,7 @@ data class FileMapEntry(
     val deletions: Int = 0,
     val failed: Boolean = false,
 ) {
-    val changed get() = actions.any { it == "created" || it == "edited" || it == "deleted" }
+    val changed get() = actions.any { it == "created" || it == "edited" || it == "deleted" || it == "renamed" }
 }
 
 /** One entry of a project folder (GET /v1/sessions/:id/tree). Folders come first, sorted. */
@@ -203,5 +230,103 @@ data class ProjectDiagram(
     val nodeWidth: Double = 190.0,
     val nodeHeight: Double = 58.0,
     val files: Int = 0,
+    val truncated: Boolean = false,
+)
+
+// ================================================================== session history (GET /v1/sessions/:id/history)
+
+/**
+ * The session's history as recorded on the PC: prompts, timeline, changed files with per-edit patches,
+ * tests and a summary. [source] is "pc" (read live) or "cloud" (the PC's saved copy, kept 7 days).
+ * Everything is optional: missing data stays null/empty and is never invented on the phone.
+ */
+@Serializable
+data class HistoryResponse(
+    val source: String? = null,
+    val savedAt: String? = null,
+    val history: SessionHistory = SessionHistory(),
+    val approvals: List<Approval> = emptyList(),
+) {
+    val live get() = source == "pc"
+}
+
+@Serializable
+data class SessionHistory(
+    val sessionId: String? = null,
+    val opencodeSessionId: String? = null,
+    val title: String? = null,
+    val projectName: String? = null,
+    val directory: String? = null,
+    val branch: String? = null,
+    val baseCommit: String? = null,
+    val agent: String? = null,
+    val model: String? = null,
+    val status: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+    val durationMs: Long? = null,
+    val prompts: List<HistoryPrompt> = emptyList(),
+    val timeline: List<TimelineEntry> = emptyList(),
+    val changes: List<FileChange> = emptyList(),
+    val tests: List<TestRun> = emptyList(),
+    val summary: HistorySummary? = null,
+)
+
+@Serializable data class HistoryPrompt(val messageId: String = "", val time: String? = null, val text: String = "")
+
+/** kind: prompt, response, read, edit, write, patch, command, test, search, web, agent, plan, tool, error, completed. */
+@Serializable
+data class TimelineEntry(
+    val id: String = "",
+    val time: String? = null,
+    val kind: String = "tool",
+    val title: String = "",
+    val detail: String? = null,
+    val file: String? = null,
+    val status: String? = null,
+    val messageId: String? = null,
+)
+
+/** One file the session changed. [status]: added, modified, deleted or renamed (from [oldPath]). */
+@Serializable
+data class FileChange(
+    val file: String = "",
+    val status: String = "modified",
+    val oldPath: String? = null,
+    val additions: Int = 0,
+    val deletions: Int = 0,
+    val edits: List<FileEdit> = emptyList(),
+)
+
+/** One tool call's change to a file, as a unified diff. */
+@Serializable
+data class FileEdit(val time: String? = null, val tool: String? = null, val additions: Int = 0, val deletions: Int = 0, val patch: String = "")
+
+/** status: passed, failed, running or unknown. */
+@Serializable data class TestRun(val time: String? = null, val command: String = "", val status: String = "unknown", val exitCode: Int? = null)
+
+@Serializable
+data class HistorySummary(
+    val prompts: Int? = null,
+    val filesChanged: Int? = null,
+    val additions: Int? = null,
+    val deletions: Int? = null,
+    val testsPassed: Int? = null,
+    val testsFailed: Int? = null,
+    val durationMs: Long? = null,
+)
+
+/**
+ * GET /v1/sessions/:id/file-versions — one file before and after the session, read live from the PC.
+ * [beforeSource]: "session" (reconstructed from the session's own edits), "git" (last commit) or null.
+ */
+@Serializable
+data class FileVersions(
+    val path: String = "",
+    val status: String = "unchanged",
+    val before: String? = null,
+    val after: String? = null,
+    val beforeSource: String? = null,
+    val note: String? = null,
     val truncated: Boolean = false,
 )

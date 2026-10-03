@@ -1,6 +1,11 @@
 package com.bambookit.android.data
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
+import android.util.LruCache
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -14,12 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.put
 
 /** A pending remote action shown in the UI until the desktop reports its result. */
 data class PendingCommand(val id: String, val type: String, val status: String, val error: String? = null, val deviceOnline: Boolean = true)
@@ -48,10 +48,28 @@ data class SessionDetail(
     val fileMap: FileMapView? = null,
     val diagram: DiagramView? = null,
     val tree: TreeView? = null,
-) {
-    /** The phone may chat, continue, retry, rewind and edit files only in sessions continued on the PC. */
-    val canChat get() = session?.remote == true
-}
+    /** Prompts, timeline, changes, tests and summary: live from the PC, or its saved copy (7 days). */
+    val history: HistoryView = HistoryView(),
+)
+
+data class HistoryView(
+    val loading: Boolean = true,
+    val loaded: Boolean = false,
+    val data: HistoryResponse? = null,
+    val error: ContentError? = null,
+)
+
+/** Before/after of one changed file, read live from the PC (GET /file-versions). */
+data class VersionsView(val path: String, val loading: Boolean = true, val versions: FileVersions? = null, val error: ContentError? = null)
+
+/** The signed-in user's profile (GET /v1/me) and the state of profile actions. */
+data class ProfileView(
+    val account: Account? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+    val photoBusy: Boolean = false,
+    val deleting: Boolean = false,
+)
 
 data class FileMapView(
     val loading: Boolean = true,
@@ -66,8 +84,6 @@ data class DiagramView(
     val diagram: ProjectDiagram? = null,
     val error: ContentError? = null,
 )
-
-data class DiffView(val file: String, val loading: Boolean = true, val result: DiffFile? = null, val error: String? = null)
 
 /** A project file opened on the phone, read live from the PC. View only — the phone never edits files. */
 data class FileView(
@@ -86,16 +102,13 @@ data class TreeView(
     val error: ContentError? = null,
 )
 
-data class ShareView(val loading: Boolean = true, val url: String? = null, val error: String? = null)
-
-/** Commands that continue or change the conversation; the API answers 409 SESSION_NOT_CONTINUED otherwise. */
-val CONTINUE_COMMANDS = setOf("SEND_MESSAGE", "CONTINUE", "RETRY", "REVERT", "UNREVERT")
-const val NOT_CONTINUED_MESSAGE = "Continue this session on your PC first, then you can chat from your phone."
-
 /**
  * Single source of truth for the UI. All data comes from bambookit-api (session content relayed
- * live from the PC); realtime events keep it current. Nothing is changed locally to "pretend" an
- * action worked — remote actions appear as pending commands until the desktop reports the outcome.
+ * live from the PC, or the PC's 7-day cloud copy); realtime events keep it current.
+ *
+ * The phone is view-only: the only actions it sends are Stop (ABORT) for a running session and
+ * answers to approvals. Nothing is changed locally to "pretend" an action worked — Stop appears as a
+ * pending command until the desktop reports the outcome.
  */
 class BambooStore(
     private val api: ApiClient,
@@ -123,8 +136,10 @@ class BambooStore(
     val notifications: StateFlow<List<NotificationItem>> = _notifications
     private val _detail = MutableStateFlow<SessionDetail?>(null)
     val detail: StateFlow<SessionDetail?> = _detail
-    private val _diff = MutableStateFlow<DiffView?>(null)
-    val diff: StateFlow<DiffView?> = _diff
+    private val _versions = MutableStateFlow<VersionsView?>(null)
+    val versions: StateFlow<VersionsView?> = _versions
+    private val _profile = MutableStateFlow(ProfileView())
+    val profile: StateFlow<ProfileView> = _profile
     private val _error = MutableStateFlow<String?>(null)
     /** Last failed full refresh (cleared by the next successful one). */
     val error: StateFlow<String?> = _error
@@ -142,9 +157,11 @@ class BambooStore(
     private var started = false
     private val _file = MutableStateFlow<FileView?>(null)
     val file: StateFlow<FileView?> = _file
-    private val _share = MutableStateFlow<ShareView?>(null)
-    val share: StateFlow<ShareView?> = _share
     private var presenceJob: Job? = null
+    private var listenJobs: List<Job> = emptyList()
+    private var historyJob: Job? = null
+    private var historyQueued = false
+    private var versionsJob: Job? = null
     private var contentJob: Job? = null
     private var fileMapJob: Job? = null
     private var diagramJob: Job? = null
@@ -160,8 +177,12 @@ class BambooStore(
                 .onFailure { report("Could not register this phone", it) }
             realtime.start()
         }
-        scope.launch { realtime.ready.collect { refreshAll() } }
-        scope.launch { realtime.events.collect { handle(it) } }
+        loadProfile()
+        // Collectors live until sign-out, so signing in again never adds a second set.
+        listenJobs = listOf(
+            scope.launch { realtime.ready.collect { refreshAll() } },
+            scope.launch { realtime.events.collect { handle(it) } },
+        )
         // Keep last-seen fresh so the desktop can show this phone as online.
         presenceJob = scope.launch {
             while (true) {
@@ -172,14 +193,23 @@ class BambooStore(
         }
     }
 
-    suspend fun signOut() {
+    /**
+     * Signs out on this phone: stops realtime, forgets the auth session, this phone's device id and the
+     * realtime resume point, and clears everything shown in memory. Nothing on the server or on the PCs
+     * is deleted; the installation id and app settings (App lock) stay. [keepPendingSignIn] keeps a
+     * browser sign-in that is in progress (used when the sign-in screen tidies up after an expired session).
+     */
+    suspend fun signOut(keepPendingSignIn: Boolean = false) {
         realtime.stop()
         presenceJob?.cancel()
-        contentJob?.cancel()
+        listenJobs.forEach { it.cancel() }
+        listenJobs = emptyList()
+        closeSession()
         started = false
+        store.clearSignedInState(keepPendingSignIn)
         auth.signOut()
-        store.deviceId = null
-        store.lastSeq = null
+        imageCache.evictAll()
+        _profile.value = ProfileView()
         _myDeviceId.value = null
         _overview.value = null
         _devices.value = emptyList()
@@ -206,6 +236,7 @@ class BambooStore(
         }.onFailure { report("Refresh failed", it) }
         _refreshing.value = false
         _detail.value?.let { loadSession(it.sessionId, keep = true) }
+        if (_profile.value.account == null) loadProfile()
     }
 
     /** The PC (desktop device) a session lives on, from the devices list. */
@@ -226,10 +257,12 @@ class BambooStore(
         diagramJob?.cancel()
         treeJob?.cancel()
         fileJob?.cancel()
+        historyJob?.cancel()
+        historyQueued = false
+        versionsJob?.cancel()
         _detail.value = null
-        _diff.value = null
+        _versions.value = null
         _file.value = null
-        _share.value = null
     }
 
     /** Re-reads the open session: metadata from the API, chat and changes live from the PC. */
@@ -308,7 +341,71 @@ class BambooStore(
         _detail.value?.let { loadContent(it.sessionId) }
     }
 
+    /**
+     * Reads the session history (prompts, timeline, changes, tests, summary): live from the PC while it is
+     * online, otherwise the PC's saved copy from the last 7 days. 503 DESKTOP_OFFLINE = neither is available.
+     * With [delayMs] (realtime refreshes) a read already waiting or running is never restarted: further
+     * triggers queue one more read after it, so a busy session is re-read every few seconds at most and
+     * a read in flight always completes.
+     */
+    fun loadHistory(delayMs: Long = 0) {
+        val id = _detail.value?.sessionId ?: return
+        if (delayMs > 0 && historyJob?.isActive == true) {
+            historyQueued = true
+            return
+        }
+        historyJob?.cancel()
+        historyQueued = false
+        if (delayMs == 0L) _detail.update { d -> if (d?.sessionId == id) d.copy(history = d.history.copy(loading = true)) else d }
+        historyJob = scope.launch {
+            if (delayMs > 0) delay(delayMs)
+            while (true) {
+                historyQueued = false
+                fetchHistory(id)
+                if (!historyQueued || _detail.value?.sessionId != id) break
+                delay(HISTORY_REFRESH_MS)
+            }
+        }
+    }
+
+    private suspend fun fetchHistory(id: String) {
+        _detail.update { d -> if (d?.sessionId == id) d.copy(history = d.history.copy(loading = true)) else d }
+        try {
+            val h = api.history(id)
+            _detail.update { d -> if (d?.sessionId == id) d.copy(history = HistoryView(loading = false, loaded = true, data = h)) else d }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val err = contentError(e, "Could not read this session's history.")
+            _detail.update { d -> if (d?.sessionId == id) d.copy(history = d.history.copy(loading = false, error = err)) else d }
+        }
+    }
+
+    /** Before/after of one changed file, live from the PC. */
+    fun loadVersions(path: String) {
+        val id = _detail.value?.sessionId ?: return
+        versionsJob?.cancel()
+        _versions.value = VersionsView(path)
+        versionsJob = scope.launch {
+            try {
+                val v = api.fileVersions(id, path)
+                if (_versions.value?.path == path) _versions.value = VersionsView(path, loading = false, versions = v)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = contentError(e, "Could not read this file from ${pcName(_detail.value?.session?.deviceId)}.")
+                if (_versions.value?.path == path) _versions.value = VersionsView(path, loading = false, error = err)
+            }
+        }
+    }
+
+    fun clearVersions() {
+        versionsJob?.cancel()
+        _versions.value = null
+    }
+
     private fun loadSession(id: String, keep: Boolean) = scope.launch {
+        loadHistory()
         runCatching {
             val session = api.session(id)
             val approvals = api.approvals().filter { it.sessionId == id }
@@ -348,27 +445,16 @@ class BambooStore(
         }
     }
 
-    private fun refreshSessionMeta(id: String) = scope.launch {
-        runCatching { api.session(id) }.onSuccess { s -> _detail.update { d -> if (d?.sessionId == id) d.copy(session = s) else d } }
-    }
-
-    /** Refuses commands that need a continued session before they reach the API. */
-    private fun guardContinued(type: String): Boolean {
-        if (type !in CONTINUE_COMMANDS || _detail.value?.canChat == true) return true
-        _messages.tryEmit(NOT_CONTINUED_MESSAGE)
-        return false
-    }
-
-    fun send(type: String, text: String? = null) {
+    /** Stop: asks the PC to abort the running agent in the open session (the only session command the phone sends). */
+    fun stop() {
         val d = _detail.value ?: return
-        if (!guardContinued(type)) return
         scope.launch {
-            runCatching {
-                api.sendCommand(d.sessionId, type, if (text != null) buildJsonObject { put("text", text) } else buildJsonObject { })
-            }.onSuccess { res ->
-                track(PendingCommand(res.data.id, type, res.data.status, deviceOnline = res.deviceOnline))
-                if (!res.deviceOnline) _messages.tryEmit("${pcName(d.session?.deviceId)} is offline — the request expires in 5 minutes if it does not reconnect.")
-            }.onFailure { report("Could not send", it) }
+            runCatching { api.sendCommand(d.sessionId, "ABORT") }
+                .onSuccess { res ->
+                    track(PendingCommand(res.data.id, "ABORT", res.data.status, deviceOnline = res.deviceOnline))
+                    if (!res.deviceOnline) _messages.tryEmit("${pcName(d.session?.deviceId)} is offline — Stop expires in 5 minutes if it does not reconnect.")
+                }
+                .onFailure { report("Could not stop", it) }
         }
     }
 
@@ -376,48 +462,6 @@ class BambooStore(
         runCatching { api.respondApproval(approval.id, reply) }
             .onSuccess { refreshApprovals() }
             .onFailure { report("Could not answer approval", it) }
-    }
-
-    /**
-     * Sends a command for the open session and waits for the desktop's result.
-     * Polls the command (1 s) so a result is never missed, even across reconnects.
-     */
-    private suspend fun runCommand(type: String, payload: JsonObject = buildJsonObject { }): Command {
-        val d = _detail.value ?: throw IllegalStateException("No session open")
-        if (type in CONTINUE_COMMANDS && !d.canChat) throw IllegalStateException(NOT_CONTINUED_MESSAGE)
-        val res = api.sendCommand(d.sessionId, type, payload)
-        track(PendingCommand(res.data.id, type, res.data.status, deviceOnline = res.deviceOnline))
-        if (!res.deviceOnline) throw IllegalStateException("${pcName(d.session?.deviceId)} is offline. Open BambooKit Desktop there and try again.")
-        repeat(90) {
-            delay(1000)
-            val c = api.command(res.data.id)
-            if (c.status != "PENDING") {
-                track(PendingCommand(c.id, type, c.status, c.error))
-                if (c.status == "FAILED") throw IllegalStateException(c.error ?: "The desktop could not do that")
-                return c
-            }
-        }
-        throw IllegalStateException("No answer from your PC yet. It may be busy; try again.")
-    }
-
-    private fun JsonElement?.str(key: String): String? =
-        (this as? JsonObject)?.get(key)?.let { (it as? JsonPrimitive)?.content }
-
-    fun openDiff(file: String) {
-        _diff.value = DiffView(file)
-        scope.launch {
-            runCatching { runCommand("GET_DIFF", buildJsonObject { put("file", file) }) }
-                .onSuccess { cmd ->
-                    val result = cmd.result?.let { json.decodeFromJsonElement<DiffResult>(it) }
-                    val diff = result?.files?.firstOrNull { it.file == file } ?: result?.files?.firstOrNull()
-                    _diff.value = if (diff == null) DiffView(file, loading = false, error = "No changes recorded for this file") else DiffView(file, loading = false, result = diff)
-                }
-                .onFailure { e -> _diff.value = DiffView(file, loading = false, error = e.message) }
-        }
-    }
-
-    fun closeDiff() {
-        _diff.value = null
     }
 
     /** Opens a project file in the read-only code viewer, read live from the PC (GET /file). */
@@ -440,38 +484,6 @@ class BambooStore(
     fun closeFile() {
         fileJob?.cancel()
         _file.value = null
-    }
-
-    /** Rewind the conversation (and files, where the engine has snapshots) to before this message. */
-    fun rewind(messageId: String) = scope.launch {
-        runCatching { runCommand("REVERT", buildJsonObject { put("messageId", messageId) }) }
-            .onSuccess { _messages.tryEmit("Rewound to before that message. Undo with \"Undo rewind\".") }
-            .onFailure { report("Rewind failed", it) }
-    }
-
-    fun undoRewind() = scope.launch {
-        runCatching { runCommand("UNREVERT") }
-            .onSuccess { _messages.tryEmit("Rewind undone") }
-            .onFailure { report("Undo failed", it) }
-    }
-
-    fun shareSession() {
-        _share.value = ShareView()
-        scope.launch {
-            runCatching { runCommand("SHARE") }
-                .onSuccess { cmd -> _share.value = ShareView(loading = false, url = cmd.result.str("url")) }
-                .onFailure { e -> _share.value = ShareView(loading = false, error = e.message) }
-        }
-    }
-
-    fun unshareSession() = scope.launch {
-        runCatching { runCommand("UNSHARE") }
-            .onSuccess { _share.value = null; _messages.tryEmit("Session unpublished") }
-            .onFailure { e -> _share.value = ShareView(loading = false, error = e.message) }
-    }
-
-    fun closeShare() {
-        _share.value = null
     }
 
     private fun track(cmd: PendingCommand) {
@@ -511,6 +523,84 @@ class BambooStore(
     private suspend fun refreshApprovals() {
         runCatching { _approvals.value = api.approvals() }
         _detail.value?.let { d -> _detail.update { it?.copy(approvals = _approvals.value.filter { a -> a.sessionId == d.sessionId }) } }
+        // The history carries every approval of the session (answered ones too) for the timeline.
+        if (_detail.value != null) loadHistory(delayMs = 1500)
+    }
+
+    // ---------------------------------------------------------------- profile
+
+    private val imageCache = LruCache<String, Bitmap>(8)
+
+    fun loadProfile() = scope.launch {
+        _profile.update { it.copy(loading = true) }
+        runCatching { api.me() }
+            .onSuccess { a -> _profile.update { it.copy(account = a, loading = false, error = null) } }
+            .onFailure { e -> _profile.update { it.copy(loading = false, error = e.message) } }
+    }
+
+    /** A profile photo, downloaded once per URL (signed URLs are cached by their path, which changes with every new photo). */
+    suspend fun image(url: String): Bitmap? {
+        val key = url.substringBefore('?')
+        imageCache.get(key)?.let { return it }
+        val bytes = runCatching { api.download(url) }.getOrNull() ?: return null
+        val bmp = withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) } ?: return null
+        imageCache.put(key, bmp)
+        return bmp
+    }
+
+    /** Uploads a prepared JPEG (at most 2 MB) as the profile photo: signed upload URL, PUT, then attach. */
+    fun uploadAvatar(jpeg: ByteArray) = scope.launch {
+        _profile.update { it.copy(photoBusy = true) }
+        runCatching {
+            val slot = api.avatarUpload("image/jpeg", jpeg.size)
+            api.putSigned(slot.url, slot.headers["Content-Type"] ?: "image/jpeg", jpeg, slot.headers)
+            api.setAvatar(slot.key)
+        }.onSuccess { res ->
+            _profile.update { p -> p.copy(photoBusy = false, account = p.account?.copy(avatarUrl = res.avatarUrl, avatarStored = true)) }
+            _messages.tryEmit("Profile photo updated")
+        }.onFailure { e ->
+            _profile.update { it.copy(photoBusy = false) }
+            _messages.tryEmit(profileError("Could not update the photo", e))
+        }
+    }
+
+    fun removeAvatar() = scope.launch {
+        _profile.update { it.copy(photoBusy = true) }
+        runCatching { api.removeAvatar(); api.me() }
+            .onSuccess { a ->
+                _profile.update { it.copy(photoBusy = false, account = a) }
+                _messages.tryEmit("Profile photo removed")
+            }
+            .onFailure { e ->
+                _profile.update { it.copy(photoBusy = false) }
+                _messages.tryEmit(profileError("Could not remove the photo", e))
+            }
+    }
+
+    /** Deletes the account on the server, then signs out on this phone. [onError] gets a readable reason. */
+    fun deleteAccount(onError: (String) -> Unit) = scope.launch {
+        _profile.update { it.copy(deleting = true) }
+        runCatching { api.deleteAccount() }
+            .onSuccess {
+                signOut()
+                _messages.tryEmit("Your BambooKit account was deleted")
+            }
+            .onFailure { e ->
+                _profile.update { it.copy(deleting = false) }
+                onError(
+                    when ((e as? ApiException)?.code) {
+                        "DELETION_NOT_CONFIGURED" -> "Account deletion isn't set up on the server yet. Nothing was deleted."
+                        else -> e.message ?: "Could not delete the account"
+                    },
+                )
+            }
+    }
+
+    private fun profileError(prefix: String, e: Throwable): String = when ((e as? ApiException)?.code) {
+        "STORAGE_NOT_CONFIGURED" -> "Cloud storage isn't set up on the server yet"
+        "IMAGE_TOO_LARGE" -> "Profile photos must be 2 MB or smaller"
+        "UNSUPPORTED_IMAGE" -> "Profile photos must be JPEG, PNG or WebP"
+        else -> "$prefix: ${e.message}"
     }
 
     // ---------------------------------------------------------------- realtime
@@ -522,6 +612,8 @@ class BambooStore(
                     val s = json.decodeFromJsonElement<Session>(event.payload)
                     _sessions.update { list -> (listOf(s) + list.filterNot { it.id == s.id }).sortedByDescending { it.updatedAt } }
                     _detail.update { d -> if (d?.sessionId == s.id) d.copy(session = s) else d }
+                    // Busy sessions send many updates (current action); the history is re-read at most every few seconds.
+                    if (_detail.value?.sessionId == s.id) loadHistory(delayMs = 1000)
                     refreshOverviewSoon()
                 }
                 "session.removed" -> {
@@ -542,12 +634,14 @@ class BambooStore(
                     val id = event.sessionId
                     if (id != null && _detail.value?.sessionId == id) {
                         loadContent(id, partsOnly = true)
+                        loadHistory(delayMs = 1500)
                         if (_detail.value?.fileMap != null) loadFileMap(delayMs = 800)
                     }
                 }
                 "session.diff" -> {
                     val files = json.decodeFromJsonElement<DiffPayload>(event.payload).files
                     _detail.update { d -> if (d != null && d.sessionId == event.sessionId) d.copy(changes = files) else d }
+                    if (_detail.value?.sessionId == event.sessionId) loadHistory(delayMs = 1500)
                     if (_detail.value?.sessionId == event.sessionId && _detail.value?.fileMap != null) loadFileMap(delayMs = 800)
                     refreshOverviewSoon()
                 }
@@ -571,9 +665,18 @@ class BambooStore(
                     val d = _detail.value
                     if (d != null && desktopOf(d.session)?.online == true) {
                         if (d.contentError?.desktopUnavailable == true && !d.contentLoading) loadContent(d.sessionId)
+                        if ((d.history.error != null || d.history.data?.live == false) && !d.history.loading) loadHistory()
                         if (d.fileMap?.error?.desktopUnavailable == true && !d.fileMap.loading) loadFileMap()
                         if (d.diagram?.error?.desktopUnavailable == true && !d.diagram.loading) loadDiagram()
                         if (d.tree?.error?.desktopUnavailable == true && !d.tree.loading) loadTree(d.tree.path)
+                    }
+                }
+                "account.deleted" -> {
+                    // The account was deleted (on another device or the website): sign out here too.
+                    // Launched separately: signing out cancels the collector this handler runs in.
+                    scope.launch {
+                        signOut()
+                        _messages.tryEmit("This BambooKit account was deleted")
                     }
                 }
                 "notification" -> {
@@ -600,18 +703,15 @@ class BambooStore(
     }
 
     private fun report(prefix: String, e: Throwable) {
-        if (e is ApiException && e.code == "SESSION_NOT_CONTINUED") {
-            // Not (or no longer) continued on the PC: say so plainly and re-read the session's state.
-            _messages.tryEmit(e.message ?: NOT_CONTINUED_MESSAGE)
-            _detail.value?.let { refreshSessionMeta(it.sessionId) }
-            return
-        }
         val msg = "$prefix: ${e.message}"
         Log.w("BambooStore", msg)
         if (prefix == "Refresh failed") _error.value = e.message
         _messages.tryEmit(msg)
     }
 }
+
+/** Pause between history re-reads while realtime events keep arriving for the open session. */
+private const val HISTORY_REFRESH_MS = 3000L
 
 @kotlinx.serialization.Serializable
 private data class DiffPayload(val files: List<ChangedFile> = emptyList())

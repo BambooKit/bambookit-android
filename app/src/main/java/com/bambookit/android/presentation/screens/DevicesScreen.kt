@@ -1,6 +1,8 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.data.AppLock
 import com.bambookit.android.data.AppUpdater
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -59,10 +61,11 @@ import com.bambookit.android.presentation.theme.TextPrimary
 import com.bambookit.android.presentation.theme.TextSecondary
 
 @Composable
-fun DevicesScreen(store: BambooStore, updater: AppUpdater, pairStatus: String?, onScan: () -> Unit, onSignOut: () -> Unit) {
+fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pairStatus: String?, onScan: () -> Unit, onProfile: () -> Unit, onSignOut: () -> Unit) {
     val devices by store.devices.collectAsState()
     val me by store.myDeviceId.collectAsState()
     val account by store.session.collectAsState()
+    val profile by store.profile.collectAsState()
     val loaded by store.loaded.collectAsState()
     val refreshing by store.refreshing.collectAsState()
     var renaming by remember { mutableStateOf<Device?>(null) }
@@ -128,15 +131,21 @@ fun DevicesScreen(store: BambooStore, updater: AppUpdater, pairStatus: String?, 
                 Spacer(Modifier.height(Space.s))
                 SectionTitle("App updates")
                 BkCard { UpdateCard(updater) }
+                SectionTitle("Settings")
+                AppLockSetting(appLock)
                 SectionTitle("Account")
-                BkCard {
+                BkCard(onClick = onProfile) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconTile(Icons.Filled.AccountCircle)
+                        val name = profile.account?.name ?: account?.name
+                        val email = profile.account?.email ?: account?.email
+                        Avatar(store, profile.account?.avatarUrl, name ?: email, 38.dp)
                         Spacer(Modifier.width(Space.m))
                         Column(Modifier.weight(1f)) {
-                            Text(account?.name ?: account?.email ?: "Signed in", color = TextPrimary, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (account?.name != null) account?.email?.let { Text(it, color = TextSecondary, fontSize = 12.sp) }
+                            Text(name ?: email ?: "Signed in", color = TextPrimary, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (name != null) email?.let { Text(it, color = TextSecondary, fontSize = 12.sp) }
                         }
+                        Text("Profile", color = TextSecondary, fontSize = 12.sp)
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                     }
                     Spacer(Modifier.height(Space.m))
                     OutlinedButton(

@@ -245,7 +245,7 @@ fun SessionCard(s: Session, onClick: () -> Unit) {
             Spacer(Modifier.width(Space.s))
             StatusChip(s.status)
         }
-        val meta = listOfNotNull(s.projectName, s.agent, brandModel(s.model)).joinToString(" · ").ifBlank { s.directory }
+        val meta = listOfNotNull(s.projectName, s.agent?.let { agentLabel(it) }, brandModel(s.model)).joinToString(" · ").ifBlank { s.directory }
         Mono(meta, size = 11, modifier = Modifier.padding(top = 3.dp))
         s.currentAction?.takeIf { it.isNotBlank() }?.let {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
@@ -254,12 +254,11 @@ fun SessionCard(s: Session, onClick: () -> Unit) {
                 Text(it, color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        val hasChips = s.changes.files > 0 || s.pendingApprovals > 0 || s.remote || s.updatedAt != null
+        val hasChips = s.changes.files > 0 || s.pendingApprovals > 0 || s.updatedAt != null
         if (hasChips) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 8.dp)) {
                 if (s.pendingApprovals > 0) Chip(plural(s.pendingApprovals, "approval"), StatusWarning, StatusWarningTint, icon = Icons.Filled.Shield)
                 if (s.changes.files > 0) Chip("${plural(s.changes.files, "file")}  +${s.changes.additions} −${s.changes.deletions}", TextSecondary, icon = Icons.Filled.Description)
-                if (s.remote) Chip("Phone chat on", StatusSuccess, icon = Icons.Filled.PhoneAndroid)
                 s.updatedAt?.let { relative(it).takeIf { r -> r.isNotBlank() }?.let { r -> Chip(r, TextMuted) } }
             }
         }
@@ -284,7 +283,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
             item {
                 Banner(
-                    "Start new sessions in BambooKit Desktop on your PC. Sessions you continue there can be chatted with from here.",
+                    "Sessions run in BambooKit Desktop on your PC. This phone shows them live (view only) and lets you stop an agent or answer approvals.",
                     Icons.Filled.DesktopWindows, color = TextSecondary, tint = BambooSurfaceElevated,
                     modifier = Modifier.padding(top = Space.xs),
                 )
@@ -405,17 +404,17 @@ fun ApprovalCard(a: Approval, store: BambooStore, pcName: String? = null, onOpen
                 OutlinedButton(
                     onClick = { store.respond(a, "reject") }, modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusFailed), contentPadding = PaddingValues(horizontal = 8.dp),
-                ) { Text("Deny") }
+                ) { Text("Reject") }
                 OutlinedButton(onClick = { store.respond(a, "always") }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Always") }
-                Button(onClick = { store.respond(a, "once") }, modifier = Modifier.weight(1.2f), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Allow once") }
+                Button(onClick = { store.respond(a, "once") }, modifier = Modifier.weight(1.3f), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Approve once") }
             }
         }
     }
 }
 
 private fun replyLabel(reply: String?) = when (reply) {
-    "once" -> "Allow once"
-    "always" -> "Always allow"
-    "reject" -> "Deny"
+    "once" -> "Approve once"
+    "always" -> "Always"
+    "reject" -> "Reject"
     else -> reply ?: "reply"
 }

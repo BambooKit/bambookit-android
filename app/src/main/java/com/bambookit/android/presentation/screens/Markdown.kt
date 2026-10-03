@@ -53,7 +53,7 @@ import com.bambookit.android.presentation.theme.TextSecondary
 import kotlinx.coroutines.delay
 
 /** Model ids from the engine's built-in free provider are shown under the BambooKit name. */
-fun brandModel(model: String?): String? = model?.replace(Regex("^opencode/"), "BambooKit/")
+fun brandModel(model: String?): String? = model?.replace(Regex("(?i)opencode"), "BambooKit")
 
 private val inlineRe = Regex("`([^`]+)`|\\*\\*([^*]+)\\*\\*|(?<![*\\w])\\*([^*\\s][^*]*)\\*(?!\\*)")
 private val bulletRe = Regex("^\\s*([-*+]|\\d+\\.)\\s+")

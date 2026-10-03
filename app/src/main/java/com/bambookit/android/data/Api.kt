@@ -20,7 +20,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * An API error. [code] is the API's machine-readable error code (e.g. DESKTOP_OFFLINE,
- * SESSION_NOT_CONTINUED), "NETWORK" when the API could not be reached, or HTTP_<status>.
+ * DESKTOP_TIMEOUT), "NETWORK" when the API could not be reached, or HTTP_<status>.
  */
 class ApiException(message: String, val status: Int, val code: String) : Exception(message) {
     /** The PC that holds the data is offline or did not answer the relay in time. */
@@ -89,6 +89,11 @@ class ApiClient(
     /** A project file's text (view only). */
     suspend fun file(sessionId: String, path: String): FileContent = get("/v1/sessions/$sessionId/file?path=${query(path)}")
 
+    /** Prompts, timeline, changed files with patches, tests and summary — live from the PC or its 7-day cloud copy. */
+    suspend fun history(sessionId: String): HistoryResponse = get("/v1/sessions/$sessionId/history")
+    /** One file before and after the session (live from the PC only). */
+    suspend fun fileVersions(sessionId: String, path: String): FileVersions = get("/v1/sessions/$sessionId/file-versions?path=${query(path)}")
+
     private fun query(value: String) = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
     suspend fun approvals(pendingOnly: Boolean = true): List<Approval> = get("/v1/approvals" + if (pendingOnly) "?status=PENDING" else "")
     suspend fun notifications(): List<NotificationItem> = get("/v1/notifications")
@@ -139,6 +144,48 @@ class ApiClient(
 
     suspend fun markAllRead() {
         post<JsonObject>("/v1/notifications/read-all")
+    }
+
+    // ---------------------------------------------------------------- profile
+
+    suspend fun avatarUpload(contentType: String, size: Int): AvatarUpload =
+        post("/v1/me/avatar-upload", buildJsonObject { put("contentType", contentType); put("size", size) })
+
+    suspend fun setAvatar(key: String): AvatarSet = post("/v1/me/avatar", buildJsonObject { put("key", key) })
+
+    suspend fun removeAvatar() {
+        call("DELETE", "/v1/me/avatar", null, JsonObject.serializer())
+    }
+
+    /** Permanently deletes the account on the server. Files and sessions on the user's PCs are not touched. */
+    suspend fun deleteAccount() {
+        call("DELETE", "/v1/me", buildJsonObject { put("confirm", "DELETE MY ACCOUNT") }, JsonObject.serializer())
+    }
+
+    /**
+     * Uploads bytes to a signed storage URL. No BambooKit auth header is sent; Content-Type and
+     * Content-Length must match what the URL was signed for.
+     */
+    suspend fun putSigned(url: String, contentType: String, bytes: ByteArray, headers: Map<String, String> = emptyMap()) = withContext(Dispatchers.IO) {
+        val builder = Request.Builder().url(url)
+        headers.forEach { (k, v) -> if (!k.equals("Content-Type", true) && !k.equals("Content-Length", true)) builder.header(k, v) }
+        val request = builder.put(bytes.toRequestBody(contentType.toMediaType())).build()
+        val response = try {
+            http.newCall(request).execute()
+        } catch (e: Exception) {
+            throw ApiException("Could not upload the photo: ${e.message}", 0, "NETWORK")
+        }
+        response.use { if (!it.isSuccessful) throw ApiException("Photo upload failed (${it.code})", it.code, "UPLOAD_FAILED") }
+    }
+
+    /** Downloads a public or pre-signed image URL (profile photos). No BambooKit auth header is sent. */
+    suspend fun download(url: String, maxBytes: Long = 5L * 1024 * 1024): ByteArray = withContext(Dispatchers.IO) {
+        http.newCall(Request.Builder().url(url).build()).execute().use {
+            if (!it.isSuccessful) throw ApiException("Download failed (${it.code})", it.code, "HTTP_${it.code}")
+            val body = it.body ?: throw ApiException("Empty response", it.code, "EMPTY")
+            if (body.contentLength() > maxBytes) throw ApiException("Image too large", it.code, "TOO_LARGE")
+            body.bytes()
+        }
     }
 
     companion object {

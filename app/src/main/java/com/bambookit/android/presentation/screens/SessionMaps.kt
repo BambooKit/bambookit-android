@@ -81,7 +81,6 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.bambookit.android.data.ChangedFile
 import com.bambookit.android.data.DiagramNode
 import com.bambookit.android.data.FileMapEntry
 import com.bambookit.android.data.ProjectDiagram
@@ -98,6 +97,8 @@ import com.bambookit.android.presentation.theme.DividerSubtle
 import com.bambookit.android.presentation.theme.NeutralTint
 import com.bambookit.android.presentation.theme.StatusFailed
 import com.bambookit.android.presentation.theme.StatusFailedTint
+import com.bambookit.android.presentation.theme.ChangeRenamed
+import com.bambookit.android.presentation.theme.ChangeRenamedTint
 import com.bambookit.android.presentation.theme.StatusRunning
 import com.bambookit.android.presentation.theme.StatusRunningTint
 import com.bambookit.android.presentation.theme.StatusSuccess
@@ -116,6 +117,7 @@ import kotlin.math.sqrt
 internal fun normPath(path: String) = path.replace('\\', '/').removePrefix("./").trim('/').lowercase()
 
 internal fun actionColor(action: String): Pair<Color, Color> = when (action) {
+    "renamed" -> ChangeRenamed to ChangeRenamedTint
     "created" -> StatusSuccess to StatusSuccessTint
     "edited" -> StatusRunning to StatusRunningTint
     "deleted" -> StatusFailed to StatusFailedTint
@@ -177,83 +179,71 @@ private fun flatten(folder: TreeFolder, depth: Int, collapsed: Set<String>, out:
     for (file in folder.files.sortedBy { it.path.substringAfterLast('/').lowercase() }) out += FileRow("f:" + file.path, file, depth)
 }
 
-/** Maps a file map path onto the session's changed-file path, which GET_DIFF matches exactly. */
-private fun diffPathFor(entry: FileMapEntry, changes: List<ChangedFile>): String {
-    val n = normPath(entry.path)
-    return changes.firstOrNull { normPath(it.file) == n || normPath(it.file).endsWith("/$n") }?.file ?: entry.path
-}
-
+/**
+ * Every file the session touched (read, created, edited, deleted, renamed) as a folder tree with
+ * All / Changed / Read only filters. Built from the session history; tapping a file opens it.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FileMapPane(d: SessionDetail, pcTitle: String, onLoad: () -> Unit, onOpenDiff: (String) -> Unit, onOpenFile: (String) -> Unit) {
-    LaunchedEffect(d.sessionId) { if (d.fileMap == null) onLoad() }
-    val fm = d.fileMap
+fun FilesTreePane(entries: List<FileMapEntry>, onOpen: (FileMapEntry) -> Unit) {
     var filter by rememberSaveable { mutableStateOf(FileFilter.All) }
     var collapsed by rememberSaveable { mutableStateOf(setOf<String>()) }
-    when {
-        fm == null || (!fm.loaded && fm.loading) -> LoadingState("Reading the file map from $pcTitle…")
-        fm.error != null && !fm.loaded -> ContentUnavailable(fm.error, pcTitle, fm.loading, onLoad)
-        else -> SessionRefresh(fm.loading, onLoad) {
-            val entries = fm.entries
-            val shown = remember(entries, filter) {
-                when (filter) {
-                    FileFilter.All -> entries
-                    FileFilter.Changed -> entries.filter { it.changed }
-                    FileFilter.ReadOnly -> entries.filter { !it.changed }
-                }
-            }
-            val rows = remember(shown, collapsed) { mutableListOf<TreeRow>().also { flatten(buildTree(shown), 0, collapsed, it) } }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = Space.xl)) {
-                if (fm.error != null) item { StaleBanner(fm.error, fm.loading, onLoad) }
-                item {
-                    Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.s)) {
-                        val created = entries.count { "created" in it.actions }
-                        val edited = entries.count { "edited" in it.actions }
-                        val deleted = entries.count { "deleted" in it.actions }
-                        val readOnly = entries.count { !it.changed }
-                        Text(
-                            listOfNotNull(
-                                plural(entries.size, "file"),
-                                created.takeIf { it > 0 }?.let { "$it created" },
-                                edited.takeIf { it > 0 }?.let { "$it edited" },
-                                deleted.takeIf { it > 0 }?.let { "$it deleted" },
-                                readOnly.takeIf { it > 0 }?.let { "$it read only" },
-                            ).joinToString(" · "),
-                            color = TextSecondary, fontSize = 13.sp,
+    val shown = remember(entries, filter) {
+        when (filter) {
+            FileFilter.All -> entries
+            FileFilter.Changed -> entries.filter { it.changed }
+            FileFilter.ReadOnly -> entries.filter { !it.changed }
+        }
+    }
+    val rows = remember(shown, collapsed) { mutableListOf<TreeRow>().also { flatten(buildTree(shown), 0, collapsed, it) } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = Space.xl)) {
+        item {
+            Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.s)) {
+                val created = entries.count { "created" in it.actions }
+                val edited = entries.count { "edited" in it.actions }
+                val deleted = entries.count { "deleted" in it.actions }
+                val renamed = entries.count { "renamed" in it.actions }
+                val readOnly = entries.count { !it.changed }
+                Text(
+                    listOfNotNull(
+                        plural(entries.size, "file"),
+                        created.takeIf { it > 0 }?.let { "$it created" },
+                        edited.takeIf { it > 0 }?.let { "$it edited" },
+                        deleted.takeIf { it > 0 }?.let { "$it deleted" },
+                        renamed.takeIf { it > 0 }?.let { "$it renamed" },
+                        readOnly.takeIf { it > 0 }?.let { "$it read only" },
+                    ).joinToString(" · "),
+                    color = TextSecondary, fontSize = 13.sp,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.padding(vertical = Space.s).horizontalScroll(rememberScrollState())) {
+                    FileFilter.entries.forEach { f ->
+                        FilterChip(
+                            selected = filter == f, onClick = { filter = f }, label = { Text(f.label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = BambooGreenSubtle, selectedLabelColor = TextPrimary,
+                                containerColor = BambooSurface, labelColor = TextSecondary,
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(enabled = true, selected = filter == f, borderColor = BambooBorder, selectedBorderColor = BambooBorderStrong),
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.padding(vertical = Space.s).horizontalScroll(rememberScrollState())) {
-                            FileFilter.entries.forEach { f ->
-                                FilterChip(
-                                    selected = filter == f, onClick = { filter = f }, label = { Text(f.label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = BambooGreenSubtle, selectedLabelColor = TextPrimary,
-                                        containerColor = BambooSurface, labelColor = TextSecondary,
-                                    ),
-                                    border = FilterChipDefaults.filterChipBorder(enabled = true, selected = filter == f, borderColor = BambooBorder, selectedBorderColor = BambooBorderStrong),
-                                )
-                            }
-                        }
                     }
-                    HorizontalDivider(color = BambooBorder)
-                }
-                if (entries.isEmpty()) item {
-                    EmptyState("No files yet", "Files the agent reads or changes in this session appear here.", Icons.Filled.Description)
-                } else if (shown.isEmpty()) item {
-                    EmptyState(if (filter == FileFilter.Changed) "No changed files" else "No read-only files", "Try another filter.", Icons.Filled.Description)
-                }
-                items(rows, key = { it.key }) { row ->
-                    when (row) {
-                        is FolderRow -> FolderTreeRow(row) {
-                            val path = row.key.removePrefix("d:")
-                            collapsed = if (row.collapsed) collapsed - path else collapsed + path
-                        }
-                        is FileRow -> FileTreeRow(row) {
-                            if (row.entry.changed) onOpenDiff(diffPathFor(row.entry, d.changes)) else onOpenFile(row.entry.path)
-                        }
-                    }
-                    HorizontalDivider(color = DividerSubtle)
                 }
             }
+            HorizontalDivider(color = BambooBorder)
+        }
+        if (entries.isEmpty()) item {
+            EmptyState("No files yet", "Files the agent reads or changes in this session appear here.", Icons.Filled.Description)
+        } else if (shown.isEmpty()) item {
+            EmptyState(if (filter == FileFilter.Changed) "No changed files" else "No read-only files", "Try another filter.", Icons.Filled.Description)
+        }
+        items(rows, key = { it.key }) { row ->
+            when (row) {
+                is FolderRow -> FolderTreeRow(row) {
+                    val path = row.key.removePrefix("d:")
+                    collapsed = if (row.collapsed) collapsed - path else collapsed + path
+                }
+                is FileRow -> FileTreeRow(row) { onOpen(row.entry) }
+            }
+            HorizontalDivider(color = DividerSubtle)
         }
     }
 }

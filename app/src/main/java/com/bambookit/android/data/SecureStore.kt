@@ -34,6 +34,21 @@ class SecureStore(context: Context) {
             prefs.edit().putString("installation_id", it).apply()
         }
 
+    /** App lock preference only (a boolean). No PIN, password or biometric data is ever stored by the app. */
+    var appLockEnabled: Boolean
+        get() = prefs.getBoolean("app_lock", false)
+        set(value) = prefs.edit().putBoolean("app_lock", value).apply()
+
+    /**
+     * Sign-out: removes the auth session, this phone's device id, the realtime resume point and any
+     * half-finished Google sign-in. Keeps the installation id and app settings (such as App lock).
+     */
+    fun clearSignedInState(keepPendingSignIn: Boolean = false) {
+        prefs.edit().remove("session").remove("device_id").remove("last_seq")
+            .apply { if (!keepPendingSignIn) remove("pkce_verifier") }
+            .apply()
+    }
+
     var pkceVerifier: String?
         get() = prefs.getString("pkce_verifier", null)
         set(value) = prefs.edit().apply { if (value == null) remove("pkce_verifier") else putString("pkce_verifier", value) }.apply()
