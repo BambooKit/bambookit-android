@@ -64,7 +64,6 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -116,7 +115,6 @@ import com.bambookit.android.data.ChangedFile
 import com.bambookit.android.data.ContentError
 import com.bambookit.android.data.Device
 import com.bambookit.android.data.DiffView
-import com.bambookit.android.data.FileView
 import com.bambookit.android.data.NOT_CONTINUED_MESSAGE
 import com.bambookit.android.data.Part
 import com.bambookit.android.data.PendingCommand
@@ -133,7 +131,6 @@ import com.bambookit.android.presentation.theme.CodeBlockBackground
 import com.bambookit.android.presentation.theme.DiffAddedLine
 import com.bambookit.android.presentation.theme.DiffRemovedLine
 import com.bambookit.android.presentation.theme.StatusFailed
-import com.bambookit.android.presentation.theme.StatusFailedTint
 import com.bambookit.android.presentation.theme.StatusRunning
 import com.bambookit.android.presentation.theme.StatusSuccess
 import com.bambookit.android.presentation.theme.StatusWarning
@@ -144,7 +141,7 @@ import com.bambookit.android.presentation.theme.TextSecondary
 import com.bambookit.android.presentation.theme.Transparent
 import com.bambookit.android.presentation.theme.UserBubble
 
-private val SessionModes = listOf("Chat", "Files", "Diagram")
+private val SessionModes = listOf("Chat", "Files", "Project", "Diagram")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -212,6 +209,12 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                 FileMapPane(d, pcTitle, onLoad = { store.loadFileMap() }, onOpenDiff = store::openDiff, onOpenFile = store::openFile)
             }
             mode == 2 && d != null && s != null -> Box(Modifier.weight(1f)) {
+                ProjectPane(
+                    d, pcTitle, projectName = s.projectName ?: s.directory.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\'),
+                    onLoad = { store.loadTree(it) }, onOpenFile = store::openFile,
+                )
+            }
+            mode == 3 && d != null && s != null -> Box(Modifier.weight(1f)) {
                 DiagramPane(d, pcTitle, onLoad = { store.loadDiagram() }, onLoadFileMap = { store.loadFileMap() }, onOpenFile = store::openFile)
             }
             else -> {
@@ -266,7 +269,7 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
         )
     }
     diff?.let { DiffDialog(it, pcTitle, onClose = store::closeDiff, onRetry = { store.openDiff(it.file) }, onOpenFile = { path -> store.closeDiff(); store.openFile(path) }) }
-    file?.let { FileDialog(it, canEdit = canChat, onClose = store::closeFile, onSave = store::saveFile, onReload = { store.openFile(it.path) }) }
+    file?.let { CodeViewer(it, pcTitle, onClose = store::closeFile, onRetry = { store.openFile(it.path) }) }
     share?.let { ShareDialog(it, onClose = store::closeShare, onUnshare = { store.unshareSession() }) }
 }
 
@@ -511,7 +514,7 @@ private fun CommandStatus(c: PendingCommand) {
     val label = when (c.type) {
         "SEND_MESSAGE" -> "Message"; "ABORT" -> "Stop"; "CONTINUE" -> "Continue"; "RETRY" -> "Retry"; "REFRESH" -> "Refresh"
         "REVERT" -> "Rewind"; "UNREVERT" -> "Undo rewind"; "SHARE" -> "Share"; "UNSHARE" -> "Unpublish"
-        "READ_FILE" -> "Open file"; "WRITE_FILE" -> "Save file"; "GET_DIFF" -> "Diff"; else -> c.type
+        "READ_FILE" -> "Open file"; "GET_DIFF" -> "Diff"; else -> c.type
     }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)) {
         when (c.status) {
@@ -631,64 +634,6 @@ private fun DiffDialog(view: DiffView, pcTitle: String, onClose: () -> Unit, onR
                             line.ifEmpty { " " }, color = fg, fontFamily = FontFamily.Monospace, fontSize = 11.sp, softWrap = false,
                             modifier = Modifier.background(bg).padding(horizontal = 10.dp, vertical = 1.dp),
                         )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** Read a file from the PC, and (in continued sessions) edit and save it back. Saving is refused if it changed on the PC meanwhile. */
-@Composable
-private fun FileDialog(view: FileView, canEdit: Boolean, onClose: () -> Unit, onSave: (String) -> Unit, onReload: () -> Unit) {
-    var editing by remember(view.path) { mutableStateOf(false) }
-    var draft by remember(view.path, view.sha256) { mutableStateOf(view.content.orEmpty()) }
-    FullScreen(onClose) {
-        ScreenTopBar(
-            title = fileName(view.path),
-            subtitle = when {
-                view.saving -> "Saving to your PC…"
-                editing -> "Editing · ${view.path}"
-                view.content != null -> "${plural(view.content.lines().size, "line")} · ${view.path}"
-                else -> view.path
-            },
-            navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close") } },
-            actions = {
-                if (view.content != null && !editing && canEdit) TextButton(onClick = { draft = view.content; editing = true }) {
-                    Icon(Icons.Filled.Edit, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Edit")
-                }
-                if (editing) {
-                    TextButton(onClick = { editing = false; draft = view.content.orEmpty() }) { Text("Cancel", color = TextSecondary) }
-                    Button(onClick = { onSave(draft); editing = false }, enabled = !view.saving && draft != view.content, modifier = Modifier.padding(end = 8.dp)) { Text("Save") }
-                }
-            },
-        )
-        HorizontalDivider(color = BambooBorder)
-        if (view.content != null && !canEdit) {
-            Banner(
-                "Read-only. Continue this session on your PC to edit files from your phone.", Icons.Filled.Lock,
-                color = TextSecondary, tint = BambooSurfaceElevated, modifier = Modifier.padding(Space.m),
-            )
-        }
-        view.error?.let {
-            Banner(it, Icons.Filled.ErrorOutline, color = StatusFailed, tint = StatusFailedTint, actionLabel = "Reload", onAction = onReload, modifier = Modifier.padding(Space.m))
-        }
-        when {
-            view.loading -> LoadingState("Opening the file on your PC…")
-            view.content == null -> Unit
-            editing -> OutlinedTextField(
-                value = draft, onValueChange = { draft = it },
-                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = TextPrimary),
-                modifier = Modifier.fillMaxSize().padding(8.dp),
-            )
-            else -> SelectionContainer {
-                Column(Modifier.fillMaxSize().background(CodeBlockBackground).verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
-                    view.content.lines().forEachIndexed { i, line ->
-                        Row(Modifier.padding(horizontal = 8.dp)) {
-                            Text("${i + 1}".padStart(4), color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                            Spacer(Modifier.width(10.dp))
-                            Text(line.ifEmpty { " " }, color = TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 11.sp, softWrap = false)
-                        }
                     }
                 }
             }

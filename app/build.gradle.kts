@@ -24,18 +24,36 @@ android {
         applicationId = "com.bambookit.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // GitHub repository whose Releases provide app updates (release builds only).
+        buildConfigField("String", "UPDATE_REPO", "\"${bkProp("bambookit.updateRepo", "BambooKit/bambookit-android")}\"")
         buildConfigField("String", "SUPABASE_URL", "\"${bkProp("bambookit.supabaseUrl")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${bkProp("bambookit.supabaseAnonKey")}\"")
         manifestPlaceholders["authScheme"] = "bambookit"
     }
 
+    // Release APKs are signed with the BambooKit release key so every update installs over the previous
+    // version. The key lives outside the repo; its location and passwords come from ~/.gradle/gradle.properties
+    // (BAMBOOKIT_RELEASE_STORE_FILE, BAMBOOKIT_RELEASE_STORE_PASSWORD, BAMBOOKIT_RELEASE_KEY_ALIAS, BAMBOOKIT_RELEASE_KEY_PASSWORD).
+    val releaseStore = providers.gradleProperty("BAMBOOKIT_RELEASE_STORE_FILE").orNull
+    signingConfigs {
+        if (releaseStore != null) {
+            create("release") {
+                storeFile = file(releaseStore)
+                storePassword = providers.gradleProperty("BAMBOOKIT_RELEASE_STORE_PASSWORD").get()
+                keyAlias = providers.gradleProperty("BAMBOOKIT_RELEASE_KEY_ALIAS").get()
+                keyPassword = providers.gradleProperty("BAMBOOKIT_RELEASE_KEY_PASSWORD").get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseStore != null) signingConfig = signingConfigs.getByName("release")
             buildConfigField("String", "API_URL", "\"${bkProp("bambookit.apiUrl.release", "https://bambookit-api.onrender.com")}\"")
             manifestPlaceholders["cleartext"] = "false"
             isMinifyEnabled = false

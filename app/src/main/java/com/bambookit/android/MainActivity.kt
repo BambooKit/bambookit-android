@@ -57,6 +57,7 @@ import com.bambookit.android.data.ApiException
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.presentation.screens.ApprovalsScreen
 import com.bambookit.android.presentation.screens.ConnectionBanner
+import com.bambookit.android.presentation.screens.UpdateBanner
 import com.bambookit.android.presentation.screens.DevicesScreen
 import com.bambookit.android.presentation.screens.HomeScreen
 import com.bambookit.android.presentation.screens.LoginScreen
@@ -91,6 +92,12 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         incoming.value = intent
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // New releases on GitHub: checked when the app opens, at most every few hours.
+        (application as BambooKitApp).updater.check()
     }
 }
 
@@ -216,12 +223,13 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
             } else Column(Modifier.fillMaxSize()) {
                 TabTopBar(tab, store, account = session?.name ?: session?.email, onScan = ::scan)
                 ConnectionBanner(store)
+                UpdateBanner(app.updater)
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         Tab.Home -> HomeScreen(store, onOpenSession = { openSession = it }, onPair = ::scan, onApprovals = { tab = Tab.Approvals })
                         Tab.Projects -> ProjectsScreen(store, onOpenSession = { openSession = it })
                         Tab.Approvals -> ApprovalsScreen(store, onOpenSession = { openSession = it })
-                        Tab.Devices -> DevicesScreen(store, pairStatus, onScan = ::scan, onSignOut = { scope.launch { store.signOut() } })
+                        Tab.Devices -> DevicesScreen(store, app.updater, pairStatus, onScan = ::scan, onSignOut = { scope.launch { store.signOut() } })
                     }
                 }
             }

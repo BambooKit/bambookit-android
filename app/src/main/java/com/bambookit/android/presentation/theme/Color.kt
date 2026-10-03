@@ -42,3 +42,14 @@ val CodeBlockBackground = Color(0xFF0D0E0C)
 val DiagramArrow = TextMuted.copy(alpha = 0.75f)
 val DiagramArrowUsed = StatusRunning.copy(alpha = 0.85f)
 val DividerSubtle = BambooBorder.copy(alpha = 0.5f)
+
+// Read-only code viewer: syntax highlighting and find-in-file.
+val SyntaxPlain = TextPrimary
+val SyntaxKeyword = StatusRunning
+val SyntaxString = StatusWarning
+val SyntaxComment = TextMuted
+val SyntaxNumber = Color(0xFFCDA8E6)
+val SyntaxType = Color(0xFF93C9C4)
+val LineNumber = TextMuted
+val SearchMatch = StatusWarning.copy(alpha = 0.28f)
+val SearchMatchCurrent = StatusWarning.copy(alpha = 0.62f)

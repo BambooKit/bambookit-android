@@ -115,7 +115,7 @@ import kotlin.math.sqrt
 /** Paths are compared case-insensitively with "/" separators (Windows projects). */
 internal fun normPath(path: String) = path.replace('\\', '/').removePrefix("./").trim('/').lowercase()
 
-private fun actionColor(action: String): Pair<Color, Color> = when (action) {
+internal fun actionColor(action: String): Pair<Color, Color> = when (action) {
     "created" -> StatusSuccess to StatusSuccessTint
     "edited" -> StatusRunning to StatusRunningTint
     "deleted" -> StatusFailed to StatusFailedTint

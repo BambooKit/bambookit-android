@@ -167,6 +167,17 @@ data class FileMapEntry(
     val changed get() = actions.any { it == "created" || it == "edited" || it == "deleted" }
 }
 
+/** One entry of a project folder (GET /v1/sessions/:id/tree). Folders come first, sorted. */
+@Serializable
+data class TreeEntry(val name: String, val path: String, val type: String, val size: Long? = null) {
+    val isDirectory get() = type == "directory"
+}
+
+@Serializable data class TreeListing(val path: String = "", val entries: List<TreeEntry> = emptyList(), val truncated: Boolean = false)
+
+/** A project file's text (GET /v1/sessions/:id/file), read live from the PC. View only. */
+@Serializable data class FileContent(val path: String, val content: String = "", val size: Long = 0)
+
 /** A component of the project diagram: a folder (group of files) or a single file. x/y are its top-left. */
 @Serializable
 data class DiagramNode(

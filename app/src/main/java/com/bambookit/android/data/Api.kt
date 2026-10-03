@@ -84,6 +84,12 @@ class ApiClient(
     suspend fun fileMap(sessionId: String): List<FileMapEntry> = get("/v1/sessions/$sessionId/filemap")
     /** Null when the PC answered without a diagram. */
     suspend fun diagram(sessionId: String): ProjectDiagram? = get("/v1/sessions/$sessionId/diagram")
+    /** One folder of the session's project; "" is the project root. */
+    suspend fun tree(sessionId: String, path: String): TreeListing = get("/v1/sessions/$sessionId/tree?path=${query(path)}")
+    /** A project file's text (view only). */
+    suspend fun file(sessionId: String, path: String): FileContent = get("/v1/sessions/$sessionId/file?path=${query(path)}")
+
+    private fun query(value: String) = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
     suspend fun approvals(pendingOnly: Boolean = true): List<Approval> = get("/v1/approvals" + if (pendingOnly) "?status=PENDING" else "")
     suspend fun notifications(): List<NotificationItem> = get("/v1/notifications")
     suspend fun command(id: String): Command = get("/v1/commands/$id")

@@ -9,3 +9,6 @@ local.properties
 
 # Kotlin compiler daemon state
 .kotlin/
+
+# Firebase config (not used by the app; never commit)
+app/google-services.json

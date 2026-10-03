@@ -1,5 +1,7 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.data.AppUpdater
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -57,7 +59,7 @@ import com.bambookit.android.presentation.theme.TextPrimary
 import com.bambookit.android.presentation.theme.TextSecondary
 
 @Composable
-fun DevicesScreen(store: BambooStore, pairStatus: String?, onScan: () -> Unit, onSignOut: () -> Unit) {
+fun DevicesScreen(store: BambooStore, updater: AppUpdater, pairStatus: String?, onScan: () -> Unit, onSignOut: () -> Unit) {
     val devices by store.devices.collectAsState()
     val me by store.myDeviceId.collectAsState()
     val account by store.session.collectAsState()
@@ -123,6 +125,9 @@ fun DevicesScreen(store: BambooStore, pairStatus: String?, onScan: () -> Unit, o
                         }
                     }
                 }
+                Spacer(Modifier.height(Space.s))
+                SectionTitle("App updates")
+                BkCard { UpdateCard(updater) }
                 SectionTitle("Account")
                 BkCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {

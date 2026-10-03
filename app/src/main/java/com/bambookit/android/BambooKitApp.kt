@@ -11,6 +11,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.bambookit.android.data.AppUpdater
 import com.bambookit.android.data.ApiClient
 import com.bambookit.android.data.AuthRepository
 import com.bambookit.android.data.BambooStore
@@ -29,6 +30,8 @@ class BambooKitApp : Application() {
         private set
     lateinit var auth: AuthRepository
         private set
+    lateinit var updater: AppUpdater
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -42,6 +45,7 @@ class BambooKitApp : Application() {
         val realtime = RealtimeClient(http, auth, secure, json, scope)
         createChannel()
         store = BambooStore(api, auth, realtime, secure, json, scope, ::showNotification)
+        updater = AppUpdater(this, http, json, scope)
     }
 
     private fun createChannel() {

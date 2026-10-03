@@ -47,6 +47,7 @@ data class SessionDetail(
     /** File map and project diagram, read live from the PC the first time their view is opened (null = not requested). */
     val fileMap: FileMapView? = null,
     val diagram: DiagramView? = null,
+    val tree: TreeView? = null,
 ) {
     /** The phone may chat, continue, retry, rewind and edit files only in sessions continued on the PC. */
     val canChat get() = session?.remote == true
@@ -68,21 +69,27 @@ data class DiagramView(
 
 data class DiffView(val file: String, val loading: Boolean = true, val result: DiffFile? = null, val error: String? = null)
 
-/** A file opened from the phone, read from (and saved back to) the PC through the desktop. */
+/** A project file opened on the phone, read live from the PC. View only — the phone never edits files. */
 data class FileView(
     val path: String,
     val loading: Boolean = true,
     val content: String? = null,
-    val sha256: String? = null,
-    val saving: Boolean = false,
-    val savedAt: Long? = null,
-    val error: String? = null,
+    val size: Long? = null,
+    val error: ContentError? = null,
+)
+
+/** The project folder browser: [path] is the folder shown ("" = project root). */
+data class TreeView(
+    val path: String = "",
+    val loading: Boolean = true,
+    val listing: TreeListing? = null,
+    val error: ContentError? = null,
 )
 
 data class ShareView(val loading: Boolean = true, val url: String? = null, val error: String? = null)
 
 /** Commands that continue or change the conversation; the API answers 409 SESSION_NOT_CONTINUED otherwise. */
-val CONTINUE_COMMANDS = setOf("SEND_MESSAGE", "CONTINUE", "RETRY", "REVERT", "UNREVERT", "WRITE_FILE")
+val CONTINUE_COMMANDS = setOf("SEND_MESSAGE", "CONTINUE", "RETRY", "REVERT", "UNREVERT")
 const val NOT_CONTINUED_MESSAGE = "Continue this session on your PC first, then you can chat from your phone."
 
 /**
@@ -141,6 +148,8 @@ class BambooStore(
     private var contentJob: Job? = null
     private var fileMapJob: Job? = null
     private var diagramJob: Job? = null
+    private var treeJob: Job? = null
+    private var fileJob: Job? = null
 
     fun start() {
         if (started || auth.session.value == null) return
@@ -215,6 +224,8 @@ class BambooStore(
         contentJob?.cancel()
         fileMapJob?.cancel()
         diagramJob?.cancel()
+        treeJob?.cancel()
+        fileJob?.cancel()
         _detail.value = null
         _diff.value = null
         _file.value = null
@@ -264,6 +275,27 @@ class BambooStore(
             } catch (e: Exception) {
                 val err = contentError(e, "Could not scan the project on ${pcName(_detail.value?.session?.deviceId)}.")
                 _detail.update { d -> if (d?.sessionId == id) d.copy(diagram = (d.diagram ?: DiagramView()).copy(loading = false, error = err)) else d }
+            }
+        }
+    }
+
+    /** Lists one folder of the open session's project ("" = root), live from the PC. */
+    fun loadTree(path: String) {
+        val id = _detail.value?.sessionId ?: return
+        treeJob?.cancel()
+        _detail.update { d ->
+            if (d?.sessionId != id) d
+            else d.copy(tree = TreeView(path = path, loading = true, listing = d.tree?.listing?.takeIf { d.tree.path == path }))
+        }
+        treeJob = scope.launch {
+            try {
+                val listing = api.tree(id, path)
+                _detail.update { d -> if (d?.sessionId == id) d.copy(tree = TreeView(path = path, loading = false, listing = listing)) else d }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = contentError(e, "Could not list this folder on ${pcName(_detail.value?.session?.deviceId)}.")
+                _detail.update { d -> if (d?.sessionId == id && d.tree?.path == path) d.copy(tree = d.tree.copy(loading = false, error = err)) else d }
             }
         }
     }
@@ -388,35 +420,25 @@ class BambooStore(
         _diff.value = null
     }
 
+    /** Opens a project file in the read-only code viewer, read live from the PC (GET /file). */
     fun openFile(path: String) {
+        val id = _detail.value?.sessionId ?: return
+        fileJob?.cancel()
         _file.value = FileView(path)
-        scope.launch {
-            runCatching { runCommand("READ_FILE", buildJsonObject { put("path", path) }) }
-                .onSuccess { cmd -> _file.value = FileView(cmd.result.str("path") ?: path, loading = false, content = cmd.result.str("content") ?: "", sha256 = cmd.result.str("sha256")) }
-                .onFailure { e -> _file.value = FileView(path, loading = false, error = e.message) }
-        }
-    }
-
-    fun saveFile(content: String) {
-        val current = _file.value ?: return
-        _file.value = current.copy(saving = true, error = null)
-        scope.launch {
-            runCatching {
-                runCommand("WRITE_FILE", buildJsonObject {
-                    put("path", current.path)
-                    put("content", content)
-                    put("baseSha256", current.sha256)
-                })
+        fileJob = scope.launch {
+            try {
+                val f = api.file(id, path)
+                if (_file.value?.path == path) _file.value = FileView(f.path.ifBlank { path }, loading = false, content = f.content, size = f.size)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (_file.value?.path == path) _file.value = FileView(path, loading = false, error = contentError(e, "Could not open this file on ${pcName(_detail.value?.session?.deviceId)}."))
             }
-                .onSuccess { cmd ->
-                    _file.value = current.copy(content = content, sha256 = cmd.result.str("sha256"), saving = false, savedAt = System.currentTimeMillis())
-                    _messages.tryEmit("Saved ${current.path} on your PC")
-                }
-                .onFailure { e -> _file.value = current.copy(saving = false, error = e.message) }
         }
     }
 
     fun closeFile() {
+        fileJob?.cancel()
         _file.value = null
     }
 
@@ -551,6 +573,7 @@ class BambooStore(
                         if (d.contentError?.desktopUnavailable == true && !d.contentLoading) loadContent(d.sessionId)
                         if (d.fileMap?.error?.desktopUnavailable == true && !d.fileMap.loading) loadFileMap()
                         if (d.diagram?.error?.desktopUnavailable == true && !d.diagram.loading) loadDiagram()
+                        if (d.tree?.error?.desktopUnavailable == true && !d.tree.loading) loadTree(d.tree.path)
                     }
                 }
                 "notification" -> {
