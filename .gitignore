@@ -12,3 +12,13 @@ local.properties
 
 # Firebase config (not used by the app; never commit)
 app/google-services.json
+
+# Secrets: signing keys and env files are never committed (.env.example holds placeholders only)
+*.jks
+*.keystore
+*.p12
+*.pfx
+google-services.json
+.env
+.env.*
+!.env.example
