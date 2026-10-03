@@ -1,0 +1,11 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+build/
+*/build/
+local.properties
+
+# Kotlin compiler daemon state
+.kotlin/

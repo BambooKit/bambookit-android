@@ -1,0 +1,40 @@
+package com.bambookit.android.data
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import java.util.UUID
+
+/** Encrypted (Android Keystore-backed) storage for the auth session and device identifiers. */
+class SecureStore(context: Context) {
+    private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
+        context,
+        "bambookit_secure",
+        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
+
+    var sessionJson: String?
+        get() = prefs.getString("session", null)
+        set(value) = prefs.edit().apply { if (value == null) remove("session") else putString("session", value) }.apply()
+
+    var deviceId: String?
+        get() = prefs.getString("device_id", null)
+        set(value) = prefs.edit().apply { if (value == null) remove("device_id") else putString("device_id", value) }.apply()
+
+    var lastSeq: Long?
+        get() = if (prefs.contains("last_seq")) prefs.getLong("last_seq", 0) else null
+        set(value) = prefs.edit().apply { if (value == null) remove("last_seq") else putLong("last_seq", value) }.apply()
+
+    /** Stable per-install identifier used to derive this phone's device id on the server. */
+    val installationId: String
+        get() = prefs.getString("installation_id", null) ?: UUID.randomUUID().toString().also {
+            prefs.edit().putString("installation_id", it).apply()
+        }
+
+    var pkceVerifier: String?
+        get() = prefs.getString("pkce_verifier", null)
+        set(value) = prefs.edit().apply { if (value == null) remove("pkce_verifier") else putString("pkce_verifier", value) }.apply()
+}
