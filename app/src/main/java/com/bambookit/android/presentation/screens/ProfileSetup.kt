@@ -22,6 +22,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -187,3 +190,27 @@ fun ProfileSetupSheet(store: BambooStore, account: Account, onClose: () -> Unit)
         }
     }
 }
+
+/**
+ * The top-bar entry to Profile (nickname, photo, notifications, App lock, updates, account): the avatar with
+ * a small settings badge so it reads as "profile and settings".
+ */
+@Composable
+fun ProfileButton(store: BambooStore, avatarUrl: String?, name: String?, onClick: () -> Unit) {
+    androidx.compose.material3.IconButton(
+        onClick = onClick,
+        modifier = Modifier.labelled("Profile and settings"),
+    ) {
+        Box(Modifier.size(34.dp)) {
+            Avatar(store, avatarUrl, name, 30.dp)
+            Box(
+                Modifier.align(Alignment.BottomEnd).size(15.dp).clip(CircleShape).background(BambooSurfaceElevated),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Settings, null, tint = TextPrimary, modifier = Modifier.size(11.dp))
+            }
+        }
+    }
+}
+
+private fun Modifier.labelled(label: String): Modifier = semantics { contentDescription = label }

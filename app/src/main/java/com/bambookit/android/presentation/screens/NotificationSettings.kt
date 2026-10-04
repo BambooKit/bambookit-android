@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -96,20 +97,37 @@ internal fun rememberNotificationEnabler(): () -> Unit {
     }
 }
 
-/** Home: a reminder while notifications are off (they are how the agent's questions reach you). */
+/**
+ * Home: a first-time reminder while notifications are off. It goes away for good once the user taps
+ * "Turn on" or "Not now"; after that, notifications are managed in Profile only.
+ */
 @Composable
 fun NotificationsOffBanner() {
     val context = LocalContext.current
+    val app = context.applicationContext as BambooKitApp
     val tick = rememberResumeTick()
     val allowed = remember(tick) { notificationsAllowed(context) }
+    var done by remember { mutableStateOf(app.secure.notificationBannerDone) }
     val enable = rememberNotificationEnabler()
-    if (allowed) return
-    Banner(
-        "Turn them on to hear when the agent asks for approval or a question, or a session finishes.",
-        Icons.Filled.NotificationsOff, color = StatusWarning, tint = StatusWarningTint, title = "Notifications are off",
-        actionLabel = "Turn on", onAction = enable,
-        modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.s),
-    )
+    if (allowed || done) return
+    fun finish() { app.secure.notificationBannerDone = true; done = true }
+    BkCard(modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.s), border = StatusWarning.copy(alpha = 0.45f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconTile(Icons.Filled.NotificationsOff, tint = StatusWarning, background = StatusWarningTint, size = 34.dp)
+            Spacer(Modifier.width(Space.m))
+            Column(Modifier.weight(1f)) {
+                Text("Notifications are off", color = StatusWarning, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(
+                    "Turn them on to hear when the agent asks for approval or a question, or a session finishes. You can change this later in Profile.",
+                    color = TextSecondary, fontSize = 12.sp, lineHeight = 16.sp,
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = Space.s), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.End) {
+            androidx.compose.material3.TextButton(onClick = { finish() }) { Text("Not now", color = TextSecondary) }
+            androidx.compose.material3.Button(onClick = { finish(); enable() }) { Text("Turn on") }
+        }
+    }
 }
 
 /** Settings: notifications, "Notify me in the background" and battery optimization guidance. */

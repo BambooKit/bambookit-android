@@ -41,6 +41,24 @@ fun QuestionDraft.toggle(q: QuestionSpec, label: String): QuestionDraft =
 fun QuestionDraft.typed(q: QuestionSpec, text: String): QuestionDraft =
     if (q.allowsMultiple) copy(custom = text) else QuestionDraft(selected = if (text.isBlank()) selected else emptySet(), custom = text)
 
+// ================================================================== session title
+
+const val SESSION_TITLE_MAX = 200
+
+/** Session titles are 1-200 characters after trimming, on one line (same rules as RENAME_SESSION). */
+fun validateSessionTitle(raw: String): NicknameCheck {
+    val title = raw.trim()
+    return when {
+        title.isEmpty() -> NicknameCheck.Invalid("Enter a title")
+        title.length > SESSION_TITLE_MAX -> NicknameCheck.Invalid("Titles can be up to $SESSION_TITLE_MAX characters")
+        title.any { it == '\n' || it == '\r' } -> NicknameCheck.Invalid("Use a single line")
+        else -> NicknameCheck.Ok(title)
+    }
+}
+
+/** Applies a like/unlike to every copy of a session in a list (optimistic update or rollback). */
+fun List<Session>.withStarred(id: String, starred: Boolean): List<Session> = map { if (it.id == id) it.copy(starred = starred) else it }
+
 // ================================================================== nickname
 
 const val NICKNAME_MAX = 40

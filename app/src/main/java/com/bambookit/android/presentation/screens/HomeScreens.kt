@@ -160,7 +160,7 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
                 BkCard { Text("No agent is working right now.", color = TextSecondary, fontSize = 13.sp) }
             }
             items(o.activeSessions, key = { "s:" + it.id }) { s ->
-                SessionCard(s) { onOpenSession(s.id) }
+                SessionRow(store, s, onOpenSession)
                 Spacer(Modifier.height(Space.s))
             }
 
@@ -238,12 +238,26 @@ private fun NotificationRow(n: NotificationItem, onClick: (() -> Unit)?) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun SessionCard(s: Session, onClick: () -> Unit) {
-    BkCard(onClick = onClick) {
+fun SessionCard(
+    s: Session,
+    onClick: () -> Unit,
+    onToggleStar: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    renamingTo: String? = null,
+) {
+    BkCard(onClick = onClick, onLongClick = onLongClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(s.title, color = TextPrimary, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(Space.s))
             StatusChip(s.status)
+            if (onToggleStar != null) StarButton(s.starred, onToggle = onToggleStar)
+        }
+        renamingTo?.let {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                CircularProgressIndicator(Modifier.size(11.dp), color = StatusRunning, strokeWidth = 1.5.dp)
+                Spacer(Modifier.width(6.dp))
+                Text("Renaming on your PC to \"$it\"…", color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         val meta = listOfNotNull(s.projectName, s.agent?.let { agentLabel(it) }, brandModel(s.model)).joinToString(" · ").ifBlank { s.directory }
         Mono(meta, size = 11, modifier = Modifier.padding(top = 3.dp))
@@ -305,7 +319,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
                     if (list.isEmpty()) Text("No sessions in this project yet.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
                 }
                 items(if (open) list else list.take(3), key = { "ps:" + it.id }) { s ->
-                    SessionCard(s) { onOpenSession(s.id) }
+                    SessionRow(store, s, onOpenSession)
                     Spacer(Modifier.height(Space.s))
                 }
                 if (list.size > 3) item(key = "pm:" + p.id) {
@@ -317,7 +331,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
             if (orphans.isNotEmpty()) {
                 item { SectionTitle("Other sessions") }
                 items(orphans, key = { "o:" + it.id }) { s ->
-                    SessionCard(s) { onOpenSession(s.id) }
+                    SessionRow(store, s, onOpenSession)
                     Spacer(Modifier.height(Space.s))
                 }
             }

@@ -60,6 +60,8 @@ val TimelineRail = BambooBorderStrong
 // App lock and profile.
 val LockScrim = BambooObsidian
 val AvatarRing = BambooBorderStrong
+/** Liked (hearted) sessions. */
+val LikedHeart = StatusFailed
 val DangerTint = StatusFailedTint
 val Transparent = Color.Transparent
 

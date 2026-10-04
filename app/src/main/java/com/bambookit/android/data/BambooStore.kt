@@ -53,6 +53,9 @@ fun contentErrorOf(e: Throwable, fallback: String): ContentError {
  */
 data class ContinueRequest(val sentAt: Long, val error: String? = null)
 
+/** A rename sent to the PC (RENAME_SESSION), shown as "Renaming on your PC..." until session.updated changes the title. */
+data class RenameRequest(val sessionId: String, val oldTitle: String, val newTitle: String, val sentAt: Long)
+
 data class SessionDetail(
     val sessionId: String,
     val session: Session? = null,
@@ -657,6 +660,51 @@ class BambooStore(
         _detail.update { d -> d?.copy(commands = (d.commands.filterNot { it.id == cmd.id } + cmd).takeLast(10)) }
     }
 
+    // ---------------------------------------------------------------- like and rename
+
+    private val _renames = MutableStateFlow<Map<String, RenameRequest>>(emptyMap())
+    /** Renames waiting for the PC, by session id. */
+    val renames: StateFlow<Map<String, RenameRequest>> = _renames
+
+    /** Applies [f] to the session wherever it is shown (lists, overview, open session). */
+    private fun updateSessionEverywhere(id: String, f: (Session) -> Session) {
+        _sessions.update { list -> list.map { if (it.id == id) f(it) else it } }
+        _overview.update { o -> o?.copy(activeSessions = o.activeSessions.map { if (it.id == id) f(it) else it }) }
+        _detail.update { d -> val cur = d?.session; if (cur != null && cur.id == id) d.copy(session = f(cur)) else d }
+    }
+
+    /** Like / unlike: shown at once, rolled back if the API refuses. */
+    fun toggleStar(session: Session) {
+        val target = !session.starred
+        updateSessionEverywhere(session.id) { it.copy(starred = target) }
+        scope.launch {
+            runCatching { api.setStarred(session.id, target) }
+                .onSuccess { s -> updateSessionEverywhere(s.id) { it.copy(starred = s.starred) } }
+                .onFailure { e ->
+                    updateSessionEverywhere(session.id) { it.copy(starred = !target) }
+                    _messages.tryEmit("Could not ${if (target) "like" else "unlike"} the session: ${e.message}")
+                }
+        }
+    }
+
+    /** Asks the session's PC to rename it; the new title arrives with session.updated. [title] is already validated. */
+    fun renameSession(session: Session, title: String) {
+        if (title == session.title) return
+        val sentAt = android.os.SystemClock.elapsedRealtime()
+        scope.launch {
+            runCatching { api.sendCommand(session.id, "RENAME_SESSION", buildJsonObject { put("title", title) }) }
+                .onSuccess {
+                    _renames.update { it + (session.id to RenameRequest(session.id, session.title, title, sentAt)) }
+                    delay(RENAME_TIMEOUT_MS)
+                    if (_renames.value[session.id]?.sentAt == sentAt) {
+                        _renames.update { it - session.id }
+                        _messages.tryEmit("${pcName(session.deviceId)} didn't rename the session. Make sure BambooKit Desktop is open and up to date, then try again.")
+                    }
+                }
+                .onFailure { _messages.tryEmit(commandError("Could not rename", it)) }
+        }
+    }
+
     // ---------------------------------------------------------------- devices
 
     fun pair(token: String, onDone: (Result<PairingResult>) -> Unit) = scope.launch {
@@ -808,6 +856,7 @@ class BambooStore(
             when (event.type) {
                 "session.updated" -> {
                     val s = json.decodeFromJsonElement<Session>(event.payload)
+                    _renames.value[s.id]?.let { r -> if (s.title != r.oldTitle) _renames.update { it - s.id } }
                     _sessions.update { list -> (listOf(s) + list.filterNot { it.id == s.id }).sortedByDescending { it.updatedAt } }
                     _detail.update { d ->
                         if (d?.sessionId != s.id) d
@@ -867,6 +916,10 @@ class BambooStore(
                     _detail.update { d ->
                         if (d == null || d.commands.none { it.id == c.id }) d
                         else d.copy(commands = d.commands.map { if (it.id == c.id) it.copy(status = c.status, error = c.error) else it })
+                    }
+                    if (c.type == "RENAME_SESSION" && c.status == "FAILED") {
+                        event.sessionId?.let { id -> _renames.update { it - id } }
+                        _messages.tryEmit("Your PC could not rename the session: ${c.error ?: "failed"}")
                     }
                     val mine = _detail.value?.commands?.any { it.id == c.id } == true
                     if (c.status == "FAILED" && mine) {
@@ -941,6 +994,9 @@ class BambooStore(
 
 /** Pause between history re-reads while realtime events keep arriving for the open session. */
 private const val HISTORY_REFRESH_MS = 3000L
+
+/** How long "Renaming on your PC..." waits for the new title. */
+const val RENAME_TIMEOUT_MS = 30_000L
 
 /** How long "Opening on your PC..." waits for the PC to confirm "Continue on PC". */
 const val CONTINUE_TIMEOUT_MS = 30_000L

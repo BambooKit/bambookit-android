@@ -49,6 +49,11 @@ class SecureStore(context: Context) {
         get() = prefs.getBoolean("notification_prompt_shown", false)
         set(value) = prefs.edit().putBoolean("notification_prompt_shown", value).apply()
 
+    /** The Home "Notifications are off" reminder is shown until the user acts on it once; later it's only in Profile. */
+    var notificationBannerDone: Boolean
+        get() = prefs.getBoolean("notification_banner_done", false)
+        set(value) = prefs.edit().putBoolean("notification_banner_done", value).apply()
+
     /** The "Set up your profile" sheet is offered once per account on this phone. */
     fun profileSetupOffered(userId: String): Boolean = prefs.getBoolean("profile_setup_$userId", false)
     fun markProfileSetupOffered(userId: String) = prefs.edit().putBoolean("profile_setup_$userId", true).apply()

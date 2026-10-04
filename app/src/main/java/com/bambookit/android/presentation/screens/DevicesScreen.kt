@@ -61,7 +61,7 @@ import com.bambookit.android.presentation.theme.TextPrimary
 import com.bambookit.android.presentation.theme.TextSecondary
 
 @Composable
-fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pairStatus: String?, onScan: () -> Unit, onProfile: () -> Unit, onSignOut: () -> Unit) {
+fun DevicesScreen(store: BambooStore, pairStatus: String?, onScan: () -> Unit, onProfile: () -> Unit) {
     val devices by store.devices.collectAsState()
     val me by store.myDeviceId.collectAsState()
     val account by store.session.collectAsState()
@@ -71,7 +71,6 @@ fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pai
     var renaming by remember { mutableStateOf<Device?>(null) }
     var confirmRevoke by remember { mutableStateOf<Device?>(null) }
     var confirmUnlink by remember { mutableStateOf<Device?>(null) }
-    var confirmSignOut by remember { mutableStateOf(false) }
     val myDesktops = devices.filter { d -> d.kind == "desktop" && d.linkedDevices.any { it.id == me } }
     val otherDesktops = devices.filter { d -> d.kind == "desktop" && d.linkedDevices.none { it.id == me } }
 
@@ -128,14 +127,8 @@ fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pai
                         }
                     }
                 }
-                Spacer(Modifier.height(Space.s))
-                SectionTitle("App updates")
-                BkCard { UpdateCard(updater) }
-                SectionTitle("Settings")
-                NotificationSettings()
-                Spacer(Modifier.height(Space.s))
-                AppLockSetting(appLock)
-                SectionTitle("Account")
+                // Notifications, App lock, updates and sign-out are in Profile only; this row leads there.
+                SectionTitle("Profile and settings")
                 BkCard(onClick = onProfile) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val name = profile.account?.name ?: account?.name
@@ -146,18 +139,12 @@ fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pai
                             Text(name ?: email ?: "Signed in", color = TextPrimary, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (name != null) email?.let { Text(it, color = TextSecondary, fontSize = 12.sp) }
                         }
-                        Text("Profile", color = TextSecondary, fontSize = 12.sp)
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Open profile and settings", tint = TextSecondary, modifier = Modifier.size(18.dp))
                     }
-                    Spacer(Modifier.height(Space.m))
-                    OutlinedButton(
-                        onClick = { confirmSignOut = true }, modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusFailed),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(Space.s))
-                        Text("Sign out")
-                    }
+                    Text(
+                        "Nickname and photo, notifications, App lock, app updates, sign out",
+                        color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(top = Space.s),
+                    )
                 }
                 BottomSpacer()
             }
@@ -193,16 +180,6 @@ fun DevicesScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, pai
             text = { Text("The PC will be disconnected from your BambooKit account and must sign in again to reconnect.", color = TextSecondary) },
             confirmButton = { TextButton(onClick = { store.revoke(d); confirmRevoke = null }) { Text("Revoke", color = StatusFailed) } },
             dismissButton = { TextButton(onClick = { confirmRevoke = null }) { Text("Cancel") } },
-        )
-    }
-    if (confirmSignOut) {
-        AlertDialog(
-            onDismissRequest = { confirmSignOut = false },
-            containerColor = BambooSurfaceElevated,
-            title = { Text("Sign out?") },
-            text = { Text("This phone stops receiving updates and approvals until you sign in again.", color = TextSecondary) },
-            confirmButton = { TextButton(onClick = { confirmSignOut = false; onSignOut() }) { Text("Sign out", color = StatusFailed) } },
-            dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },
         )
     }
 }

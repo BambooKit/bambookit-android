@@ -119,7 +119,7 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
             title = s?.title ?: h?.title ?: "Session",
             subtitle = listOfNotNull(s?.projectName ?: h?.projectName, pc?.name).joinToString(" · ").ifBlank { null },
             navigationIcon = { IconButton(onClick = close) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-            actions = { IconButton(onClick = { store.reloadSession() }, enabled = d != null) { Icon(Icons.Filled.Refresh, "Reload") } },
+            actions = { SessionMenu(store, s, onReload = { store.reloadSession() }) },
         )
         ScrollableTabRow(
             selectedTabIndex = tab.ordinal, containerColor = BambooObsidian, contentColor = TextPrimary, edgePadding = Space.s,

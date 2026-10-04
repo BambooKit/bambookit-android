@@ -90,6 +90,8 @@ data class Session(
     val pendingApprovals: Int = 0,
     /** True once the session was continued on the PC ("Continue on PC"); only then may the phone chat in it. */
     val remote: Boolean = false,
+    /** Liked by the user (kept by BambooKit only, never sent to the PC). */
+    val starred: Boolean = false,
     val createdAt: String? = null,
     val updatedAt: String? = null,
 ) {

@@ -101,6 +101,9 @@ class ApiClient(
     suspend fun projects(): List<Project> = get("/v1/projects")
     suspend fun sessions(projectId: String? = null): List<Session> = get("/v1/sessions" + (projectId?.let { "?projectId=$it" } ?: ""))
     suspend fun session(id: String): Session = get("/v1/sessions/$id")
+    /** Like / unlike a session; returns the updated session. */
+    suspend fun setStarred(id: String, starred: Boolean): Session =
+        call("PATCH", "/v1/sessions/$id", buildJsonObject { put("starred", starred) }, Envelope.serializer(Session.serializer())).data
     suspend fun parts(sessionId: String): List<Part> = relayGet("/v1/sessions/$sessionId/parts")
     suspend fun changes(sessionId: String): List<ChangedFile> = relayGet("/v1/sessions/$sessionId/changes")
     suspend fun fileMap(sessionId: String): List<FileMapEntry> = relayGet("/v1/sessions/$sessionId/filemap")

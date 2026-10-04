@@ -9,7 +9,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import com.bambookit.android.presentation.screens.AppLockScreen
-import com.bambookit.android.presentation.screens.Avatar
+import com.bambookit.android.presentation.screens.ProfileButton
 import com.bambookit.android.presentation.screens.LocalAppLocked
 import com.bambookit.android.presentation.screens.ProfileScreen
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -297,12 +297,12 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             val current = openSession
             if (showProfile) {
-                ProfileScreen(store, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } })
+                ProfileScreen(store, app.updater, app.lock, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } })
             } else if (current != null) {
                 SessionScreen(store, current, onBack = { openSession = null })
             } else Column(Modifier.fillMaxSize()) {
                 TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan) {
-                    IconButton(onClick = { showProfile = true }) { Avatar(store, profile.account?.avatarUrl, accountName ?: accountEmail, 30.dp) }
+                    ProfileButton(store, profile.account?.avatarUrl, accountName ?: accountEmail) { showProfile = true }
                 }
                 ConnectionBanner(store)
                 if (tab == Tab.Home) NotificationsOffBanner()
@@ -312,10 +312,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                         Tab.Home -> HomeScreen(store, onOpenSession = { openSession = it }, onPair = ::scan, onApprovals = { tab = Tab.Approvals })
                         Tab.Projects -> ProjectsScreen(store, onOpenSession = { openSession = it })
                         Tab.Approvals -> ApprovalsScreen(store, onOpenSession = { openSession = it })
-                        Tab.Devices -> DevicesScreen(
-                            store, app.updater, app.lock, pairStatus, onScan = ::scan, onProfile = { showProfile = true },
-                            onSignOut = { scope.launch { store.signOut() } },
-                        )
+                        Tab.Devices -> DevicesScreen(store, pairStatus, onScan = ::scan, onProfile = { showProfile = true })
                     }
                 }
             }

@@ -69,6 +69,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bambookit.android.data.Account
 import com.bambookit.android.data.BambooStore
+import com.bambookit.android.data.AppLock
+import com.bambookit.android.data.AppUpdater
 import com.bambookit.android.presentation.theme.AvatarRing
 import com.bambookit.android.presentation.theme.BambooGreenSubtle
 import com.bambookit.android.presentation.theme.BambooSurfaceElevated
@@ -157,7 +159,7 @@ private fun providerLabel(provider: String?): String = when (provider) {
 
 /** The signed-in user's profile: photo, account facts, sign out and account deletion. */
 @Composable
-fun ProfileScreen(store: BambooStore, onBack: () -> Unit, onSignOut: () -> Unit) {
+fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onBack: () -> Unit, onSignOut: () -> Unit) {
     val profile by store.profile.collectAsState()
     val session by store.session.collectAsState()
     val context = LocalContext.current
@@ -226,6 +228,19 @@ fun ProfileScreen(store: BambooStore, onBack: () -> Unit, onSignOut: () -> Unit)
                 if (account != null) item {
                     SectionTitle("Nickname")
                     BkCard { NicknameEditor(store, account) }
+                }
+                // Settings live here only (not on the Devices tab): notifications, App lock and updates.
+                item {
+                    SectionTitle("Notifications")
+                    NotificationSettings()
+                }
+                item {
+                    SectionTitle("App lock")
+                    AppLockSetting(appLock)
+                }
+                item {
+                    SectionTitle("App updates")
+                    BkCard { UpdateCard(updater) }
                 }
                 if (account != null) item {
                     SectionTitle("Account")
