@@ -143,6 +143,11 @@ object Diagnostics {
                 "Your sign-in was not accepted (it may have expired). Reconnecting refreshes it; if that fails, sign out and sign in again.",
                 listOf(DiagAction.Reconnect, DiagAction.Refresh),
             )
+            d.code == "UPLOAD_FAILED" && d.details["storageCode"] == "AccessDenied" -> Explanation(
+                "The upload link was valid, but cloud storage refused to store the file: the server's storage (R2) API token doesn't have write access to the bucket. " +
+                    "Only the server owner can fix this, by giving that token Object Read & Write permission for the bucket.",
+                listOf(DiagAction.Retry),
+            )
             d.status == 403 && d.code == "UPLOAD_FAILED" -> Explanation(
                 "Cloud storage rejected the upload. The upload link is signed for an exact size and type; a mismatch or an expired link gives 403.",
                 listOf(DiagAction.Retry),

@@ -268,10 +268,17 @@ class ApiClient(
         }
         response.use {
             if (!it.isSuccessful) {
+                // S3-style XML error: only its code is kept (never the URL or the request details it echoes).
+                val storageCode = runCatching { Regex("<Code>([A-Za-z]+)</Code>").find(it.body?.string().orEmpty())?.groupValues?.get(1) }.getOrNull()
                 val ex = ApiException(
-                    if (it.code == 403) "Cloud storage rejected the photo (403). The upload link didn't match the photo's size or type, or it expired."
-                    else "Photo upload failed (${it.code})",
+                    when {
+                        storageCode == "AccessDenied" -> "Cloud storage refused the photo (403 AccessDenied). The BambooKit server's storage key isn't allowed to write to its bucket; the server owner has to fix the storage permissions."
+                        storageCode == "SignatureDoesNotMatch" -> "Cloud storage rejected the photo (403 SignatureDoesNotMatch): the upload didn't match what the link was signed for."
+                        it.code == 403 -> "Cloud storage rejected the photo (403). The upload link didn't match the photo's size or type, or it expired."
+                        else -> "Photo upload failed (${it.code})"
+                    },
                     it.code, "UPLOAD_FAILED", "PUT", "storage upload",
+                    details = storageCode?.let { c -> kotlinx.serialization.json.buildJsonObject { put("storageCode", c) } },
                 )
                 Diagnostics.record(ex.diagnosis)
                 throw ex

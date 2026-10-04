@@ -65,6 +65,13 @@ class ErrorMappingTest {
         assertTrue(storage.why.contains("R2_BUCKET_NAME"))
     }
 
+    @Test fun storageAccessDeniedPointsAtTheServerToken() {
+        val why = Diagnostics.explain(Diagnosis("m", "UPLOAD_FAILED", 403, "PUT", "storage upload", details = mapOf("storageCode" to "AccessDenied")))
+        assertTrue(why.why.contains("write access"))
+        val other = Diagnostics.explain(Diagnosis("m", "UPLOAD_FAILED", 403, "PUT", "storage upload"))
+        assertTrue(other.why.contains("exact size"))
+    }
+
     @Test fun technicalDetailsHaveNoQueryOrToken() {
         assertEquals("/v1/sessions/s/file?…", Diagnostics.safePath("/v1/sessions/s/file?path=secret.txt"))
         val e = ApiClient.errorFrom(json, "GET", Diagnostics.safePath("/v1/a?token=abc"), 500, "not json", null, null)
