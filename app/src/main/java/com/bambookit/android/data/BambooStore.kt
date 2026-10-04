@@ -143,7 +143,7 @@ data class ApprovalDetailView(val loading: Boolean = true, val detail: ApprovalD
 /** "New session" from the phone: sent, waiting for the PC to create it, failed, or created (then opened). */
 sealed interface NewSessionState {
     data object Sending : NewSessionState
-    data class Waiting(val projectId: String, val known: Set<String>, val commandId: String, val sentAt: Long, val deviceOnline: Boolean) : NewSessionState
+    data class Waiting(val projectId: String, val known: Set<String>, val commandId: String, val sentAt: Long, val deviceOnline: Boolean, val model: ModelRef? = null) : NewSessionState
     data class Failed(val message: String) : NewSessionState
     data class Created(val sessionId: String) : NewSessionState
 }
@@ -674,19 +674,25 @@ class BambooStore(
             runCatching { api.createSession(project.id, body, model) }
                 .onSuccess { res ->
                     val sentAt = android.os.SystemClock.elapsedRealtime()
-                    _newSession.value = NewSessionState.Waiting(project.id, known, res.data.id, sentAt, res.deviceOnline)
+                    _newSession.value = NewSessionState.Waiting(project.id, known, res.data.id, sentAt, res.deviceOnline, model)
                     if (!res.deviceOnline) _messages.tryEmit("${pcName(project.deviceId)} is offline. The session starts if it reconnects within 5 minutes.")
                     delay(NEW_SESSION_TIMEOUT_MS)
                     val now = _newSession.value
                     if (now is NewSessionState.Waiting && now.sentAt == sentAt) {
                         // Re-read once in case the event was missed.
                         val fresh = runCatching { api.sessions(project.id) }.getOrNull().orEmpty().firstOrNull { it.id !in known }
-                        _newSession.value = if (fresh != null) NewSessionState.Created(fresh.id)
+                        _newSession.value = if (fresh != null) created(now, fresh.id)
                         else NewSessionState.Failed("${pcName(project.deviceId)} didn't start the session within a minute. Make sure BambooKit Desktop is open and up to date, then try again.")
                     }
                 }
                 .onFailure { _newSession.value = NewSessionState.Failed(commandError("Could not start the session", it)) }
         }
+    }
+
+    /** The new session arrived: the model picked for it is remembered for that session. */
+    private fun created(w: NewSessionState.Waiting, id: String): NewSessionState {
+        w.model?.let { store.setSessionModel(id, it) }
+        return NewSessionState.Created(id)
     }
 
     fun clearNewSession() {
@@ -1113,7 +1119,7 @@ class BambooStore(
                     if (_detail.value?.sessionId == s.id) loadHistory(delayMs = 1000)
                     // A session started from this phone: open it once the PC reports it.
                     (_newSession.value as? NewSessionState.Waiting)?.let { w ->
-                        if (s.projectId == w.projectId && s.id !in w.known) _newSession.value = NewSessionState.Created(s.id)
+                        if (s.projectId == w.projectId && s.id !in w.known) _newSession.value = created(w, s.id)
                     }
                     refreshOverviewSoon()
                 }

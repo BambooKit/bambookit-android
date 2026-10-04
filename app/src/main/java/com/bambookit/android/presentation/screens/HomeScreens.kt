@@ -1,5 +1,7 @@
 package com.bambookit.android.presentation.screens
 
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -290,6 +292,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
     val error by store.error.collectAsState()
     val refreshing by store.refreshing.collectAsState()
     var expanded by rememberSaveable { mutableStateOf(setOf<String>()) }
+    var newIn by rememberSaveable { mutableStateOf<String?>(null) }
     val projectIds = projects.map { it.id }.toSet()
     val orphans = sessions.filter { it.projectId == null || it.projectId !in projectIds }
 
@@ -297,7 +300,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
             item {
                 Banner(
-                    "Sessions run in BambooKit Desktop on your PC. Open one to follow it live, answer the agent's requests, or tap Continue on PC to chat in it from here.",
+                    "Sessions run in BambooKit Desktop on your PC. Start one with New session, open one to follow it live and answer the agent's requests, or tap Continue on PC to chat in an existing one.",
                     Icons.Filled.DesktopWindows, color = TextSecondary, tint = BambooSurfaceElevated,
                     modifier = Modifier.padding(top = Space.xs),
                 )
@@ -314,7 +317,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
                 val open = p.id in expanded
                 item(key = "p:" + p.id) {
                     Spacer(Modifier.height(Space.m))
-                    ProjectHeader(p, devices.firstOrNull { it.id == p.deviceId })
+                    ProjectHeader(p, devices.firstOrNull { it.id == p.deviceId }, onNewSession = { newIn = p.id })
                     Spacer(Modifier.height(Space.s))
                     if (list.isEmpty()) Text("No sessions in this project yet.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
                 }
@@ -338,11 +341,16 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
             item { BottomSpacer() }
         }
     }
+    newIn?.let { id ->
+        projects.firstOrNull { it.id == id }?.let { p ->
+            NewSessionSheet(store, p, onOpenSession = { sid -> newIn = null; onOpenSession(sid) }, onDismiss = { newIn = null })
+        }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ProjectHeader(p: Project, pc: Device?) {
+private fun ProjectHeader(p: Project, pc: Device?, onNewSession: () -> Unit) {
     BkCard(container = BambooSurfaceElevated) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconTile(Icons.Filled.Folder, size = 34.dp)
@@ -350,6 +358,12 @@ private fun ProjectHeader(p: Project, pc: Device?) {
             Column(Modifier.weight(1f)) {
                 Text(p.name, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Mono(p.directory, size = 11)
+            }
+            Spacer(Modifier.width(Space.s))
+            Button(onClick = onNewSession, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.heightIn(min = 48.dp)) {
+                Icon(Icons.Filled.Add, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("New session", fontSize = 13.sp)
             }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 10.dp)) {
