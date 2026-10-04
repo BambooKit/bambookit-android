@@ -241,11 +241,18 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
         )
     }
     openChange?.let { path ->
-        h?.changes?.firstOrNull { it.file == path }?.let { change ->
+        val change = h?.changes?.firstOrNull { it.file == path }
+        // The file left the change list after a live reload (e.g. the agent undid it): say so instead of closing silently.
+        if (change == null && h != null) LaunchedEffect(path) { openChange = null; store.notify("${fileName(path)} is no longer changed in this session") }
+        change?.let { change ->
             FileChangeScreen(
                 change, versions, pcTitle,
                 onClose = { openChange = null; store.clearVersions() },
                 onLoadVersions = { store.loadVersions(change.file) },
+                context = ChangeContext(
+                    project = s?.projectName ?: h.projectName, branch = h.branch,
+                    session = s?.title ?: h.title, agent = s?.agent ?: h.agent,
+                ),
             )
         }
     }

@@ -1265,6 +1265,11 @@ class BambooStore(
         }
     }
 
+    /** A short message for the snackbar. */
+    fun notify(message: String) {
+        _messages.tryEmit(message)
+    }
+
     private fun report(prefix: String, e: Throwable) {
         val msg = "$prefix: ${e.message}"
         Log.w("BambooStore", msg)

@@ -1,5 +1,16 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.data.FileState
+import com.bambookit.android.data.fileState
+import com.bambookit.android.data.diffStats
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -154,6 +165,28 @@ private fun diffLinesFor(change: FileChange, selected: Int): List<DiffLine> {
 
 // ================================================================== screen
 
+/** Where a changed file belongs: shown in the file's header. */
+data class ChangeContext(val project: String? = null, val branch: String? = null, val session: String? = null, val agent: String? = null)
+
+/** Headline for the explicit file states (instead of an error or an empty diff). */
+internal fun stateHeadline(state: FileState): Pair<String, Color> = when (state) {
+    FileState.New -> "NEW FILE" to ChangeAdded
+    FileState.Deleted -> "DELETED FILE" to ChangeDeleted
+    FileState.Renamed -> "RENAMED" to ChangeRenamed
+    FileState.Binary -> "BINARY FILE" to ChangeModified
+    FileState.TooLarge -> "TOO LARGE" to ChangeModified
+    FileState.Modified -> "MODIFIED" to ChangeModified
+}
+
+/** The +/− of a change: the PC's counts, or counted from the recorded patches when the PC sent none. */
+internal fun changeCounts(change: FileChange): Pair<Int, Int> {
+    if (change.additions > 0 || change.deletions > 0) return change.additions to change.deletions
+    val st = change.edits.map { diffStats(it.patch) }
+    return st.sumOf { it.additions } to st.sumOf { it.deletions }
+}
+
+internal fun fileName(path: String) = path.substringAfterLast('/').substringAfterLast('\\')
+
 private val FileModes = listOf("Diff", "Before", "After")
 
 /**
@@ -161,7 +194,14 @@ private val FileModes = listOf("Diff", "Before", "After")
  * patches, available offline) and the full Before / After text (read live from the PC).
  */
 @Composable
-fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: String, onClose: () -> Unit, onLoadVersions: () -> Unit) {
+fun FileChangeScreen(
+    change: FileChange,
+    versions: VersionsView?,
+    pcTitle: String,
+    onClose: () -> Unit,
+    onLoadVersions: () -> Unit,
+    context: ChangeContext = ChangeContext(),
+) {
     if (LocalAppLocked.current) return
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(BambooObsidian)) {
@@ -181,7 +221,7 @@ fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: Strin
             }
 
             ScreenTopBar(
-                title = change.file.substringAfterLast('/').substringAfterLast('\\'),
+                title = fileName(change.file),
                 subtitle = change.file,
                 navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close") } },
                 actions = {
@@ -189,17 +229,20 @@ fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: Strin
                     CodeMenu(change.file, text)
                 },
             )
-            val st = changeStyle(change.status)
+            val state = fileState(change.status, change.edits.map { it.patch }, v?.versions?.truncated == true)
+            val (headline, headColor) = stateHeadline(state)
+            val (adds, dels) = remember(change) { changeCounts(change) }
             Row(Modifier.fillMaxWidth().padding(horizontal = Space.screen).padding(bottom = Space.s), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    st.headline, color = st.color, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
-                    modifier = Modifier.clip(ChipShape).background(st.tint).padding(horizontal = 9.dp, vertical = 3.dp),
+                    headline, color = headColor, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
+                    modifier = Modifier.clip(ChipShape).background(headColor.copy(alpha = 0.14f)).padding(horizontal = 9.dp, vertical = 3.dp),
                 )
                 Spacer(Modifier.width(Space.s))
-                PlusMinus(change.additions, change.deletions)
+                PlusMinus(adds, dels)
                 Spacer(Modifier.weight(1f))
                 if (change.edits.isNotEmpty()) Text(plural(change.edits.size, "edit"), color = TextMuted, fontSize = 12.sp)
             }
+            ChangeFacts(change, context)
             if (change.status == "renamed" && change.oldPath != null) {
                 Text(
                     "Renamed from ${change.oldPath}", color = TextSecondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
@@ -221,7 +264,7 @@ fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: Strin
             HorizontalDivider(color = BambooBorder)
             Box(Modifier.weight(1f)) {
                 when (mode) {
-                    0 -> DiffPane(change, selected, onSelect = { selected = it }, onShowAfter = { mode = 2 })
+                    0 -> DiffPane(change, state, selected, onSelect = { selected = it }, onShowAfter = { mode = 2 })
                     else -> VersionPane(change, v, before = mode == 1, pcTitle, searching, onCloseSearch = { searching = false }, onRetry = onLoadVersions, onShowDiff = { mode = 0 })
                 }
             }
@@ -230,7 +273,7 @@ fun FileChangeScreen(change: FileChange, versions: VersionsView?, pcTitle: Strin
 }
 
 @Composable
-private fun DiffPane(change: FileChange, selected: Int, onSelect: (Int) -> Unit, onShowAfter: () -> Unit) {
+private fun DiffPane(change: FileChange, state: FileState, selected: Int, onSelect: (Int) -> Unit, onShowAfter: () -> Unit) {
     val lines = remember(change, selected) { diffLinesFor(change, selected) }
     Column(Modifier.fillMaxSize()) {
         if (change.edits.size > 1) {
@@ -243,14 +286,38 @@ private fun DiffPane(change: FileChange, selected: Int, onSelect: (Int) -> Unit,
             }
         }
         if (lines.isEmpty()) {
+            val (title, body) = when (state) {
+                FileState.Binary -> "Binary file" to "This file is binary, so there is no line-by-line diff."
+                FileState.TooLarge -> "Too large to show" to "The file is too large for a line-by-line diff on the phone. Before and After show its first part."
+                FileState.New -> "New file" to "The session created this file without a recorded patch. After shows its full content while the PC is online."
+                FileState.Deleted -> "Deleted file" to "The file was deleted in this session. Before shows what it contained, when an earlier version is known."
+                FileState.Renamed -> "Renamed without changes" to "The file was moved or renamed; its content did not change."
+                FileState.Modified -> "No line-by-line diff recorded" to "The PC found this change in its snapshot without a patch. Before and After show the full file while the PC is online."
+            }
             EmptyState(
-                "No line-by-line diff recorded",
-                if (change.status == "deleted") "The file was deleted in this session."
-                else "The session recorded this change without a patch (for example a binary file or a change found by the PC's snapshot). Before and After show the full file while the PC is online.",
-                Icons.Filled.Description,
-                actionLabel = if (change.status != "deleted") "Show After" else null, onAction = onShowAfter,
+                title, body, Icons.Filled.Description,
+                actionLabel = when (state) { FileState.Deleted, FileState.Binary -> null; else -> "Show After" }, onAction = onShowAfter,
             )
         } else DiffLines(lines)
+    }
+}
+
+/** Full path, project, branch, session, agent, last change time and the tools that changed the file. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChangeFacts(change: FileChange, ctx: ChangeContext) {
+    val last = change.edits.mapNotNull { parseInstant(it.time) }.maxOrNull()
+    val tools = change.edits.mapNotNull { it.tool?.takeIf(String::isNotBlank) }.groupingBy { it }.eachCount()
+    Column(Modifier.fillMaxWidth().padding(horizontal = Space.screen).padding(bottom = Space.s)) {
+        SelectionContainer { Text(change.file, color = TextSecondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 6.dp)) {
+            ctx.project?.let { Chip(it, TextSecondary, icon = Icons.Filled.Folder) }
+            ctx.branch?.let { Chip(it, TextSecondary, icon = Icons.AutoMirrored.Filled.CallSplit) }
+            ctx.session?.let { Chip(it, TextSecondary, icon = Icons.Filled.ChatBubbleOutline) }
+            ctx.agent?.let { Chip(agentLabel(it), TextSecondary, icon = Icons.Filled.SmartToy) }
+            last?.let { Chip("${shortClock(it)} · ${relative(it.toString())}", TextMuted, icon = Icons.Filled.Schedule) }
+            tools.forEach { (t, n) -> Chip(if (n > 1) "$t ×$n" else t, TextSecondary, icon = Icons.Filled.Build) }
+        }
     }
 }
 

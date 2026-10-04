@@ -677,7 +677,8 @@ internal fun ChangesPane(data: HistoryResponse, onOpen: (FileChange) -> Unit) {
             }
             groups.forEach { (status, list) ->
                 item(key = "h:$status") { SectionTitle("${changeStyle(status).label} (${list.size})") }
-                items(list, key = { "c:" + it.file }) { c ->
+                items(list.size, key = { i -> "c:$status:$i:" + list[i].file }) { i ->
+                    val c = list[i]
                     ChangeRow(c) { onOpen(c) }
                     Spacer(Modifier.height(Space.s))
                 }
@@ -694,14 +695,23 @@ private fun ChangeRow(c: FileChange, onClick: () -> Unit) {
             ChangeBadge(c.status)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(c.file.substringAfterLast('/'), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val dir = c.file.substringBeforeLast('/', "")
+                Text(fileName(c.file), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val name = fileName(c.file)
+                val dir = c.file.removeSuffix(name).trimEnd('/', '\\')
                 if (dir.isNotEmpty()) Mono(dir, color = TextMuted, size = 11)
                 if (c.status == "renamed" && c.oldPath != null) Mono("from ${c.oldPath}", color = TextMuted, size = 11)
-                if (c.edits.size > 1) Text(plural(c.edits.size, "edit"), color = TextMuted, fontSize = 11.sp)
+                val tools = c.edits.mapNotNull { it.tool?.takeIf(String::isNotBlank) }.distinct()
+                val last = c.edits.mapNotNull { parseInstant(it.time) }.maxOrNull()
+                val meta = listOfNotNull(
+                    plural(c.edits.size, "edit").takeIf { c.edits.isNotEmpty() },
+                    tools.takeIf { it.isNotEmpty() }?.joinToString(", "),
+                    last?.let { shortClock(it) },
+                ).joinToString(" · ")
+                if (meta.isNotEmpty()) Text(meta, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(8.dp))
-            PlusMinus(c.additions, c.deletions)
+            val (adds, dels) = changeCounts(c)
+            PlusMinus(adds, dels)
         }
     }
 }
