@@ -1,6 +1,10 @@
 package com.bambookit.android.presentation.screens
 
 import com.bambookit.android.data.FileChange
+import com.bambookit.android.data.DiffCode
+import com.bambookit.android.data.DiffHunkHeader
+import com.bambookit.android.data.DiffNote
+import com.bambookit.android.data.parseUnifiedDiff
 import com.bambookit.android.data.HistoryPrompt
 import com.bambookit.android.data.HistoryResponse
 import com.bambookit.android.data.SessionHistory

@@ -54,6 +54,13 @@ class SecureStore(context: Context) {
         get() = prefs.getBoolean("notification_banner_done", false)
         set(value) = prefs.edit().putBoolean("notification_banner_done", value).apply()
 
+    /** The model picked for a session on this phone (provider + model id, never a key). */
+    fun sessionModel(sessionId: String): ModelRef? =
+        prefs.getString("model_$sessionId", null)?.split('|', limit = 2)?.takeIf { it.size == 2 && it.all(String::isNotBlank) }?.let { ModelRef(it[0], it[1]) }
+
+    fun setSessionModel(sessionId: String, model: ModelRef?) =
+        prefs.edit().apply { if (model == null) remove("model_$sessionId") else putString("model_$sessionId", "${model.providerID}|${model.modelID}") }.apply()
+
     /** The "Set up your profile" sheet is offered once per account on this phone. */
     fun profileSetupOffered(userId: String): Boolean = prefs.getBoolean("profile_setup_$userId", false)
     fun markProfileSetupOffered(userId: String) = prefs.edit().putBoolean("profile_setup_$userId", true).apply()
@@ -63,7 +70,9 @@ class SecureStore(context: Context) {
      * half-finished Google sign-in. Keeps the installation id and app settings (such as App lock).
      */
     fun clearSignedInState(keepPendingSignIn: Boolean = false) {
+        val models = prefs.all.keys.filter { it.startsWith("model_") }
         prefs.edit().remove("session").remove("device_id").remove("last_seq")
+            .apply { models.forEach { remove(it) } }
             .apply { if (!keepPendingSignIn) remove("pkce_verifier") }
             .apply()
     }

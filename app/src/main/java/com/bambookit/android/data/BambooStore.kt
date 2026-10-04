@@ -81,6 +81,12 @@ data class SessionDetail(
     val continueRequest: ContinueRequest? = null,
     /** A message is being sent (SEND_MESSAGE). */
     val sending: Boolean = false,
+    /** The send button's state: idle, sending, sent, or failed with Retry. */
+    val send: SendState = SendState.Idle,
+    /** The agent's todo list, live from the PC and session.todos events. */
+    val todos: TodosView = TodosView(),
+    /** The model picked on this phone for this session (null = the session's / PC's default). */
+    val model: ModelRef? = null,
     /** When this session was last read from the API (elapsed realtime ms), to avoid re-reading on rotation. */
     val loadedAt: Long = 0,
 )
@@ -120,6 +126,27 @@ data class DiagramView(
     /** The diagram shown is the last one saved on this phone (time in epoch ms) while a fresh one is built. */
     val cachedAt: Long? = null,
 )
+
+/** The AI providers of one PC (GET /v1/devices/:id/providers). [busy]: provider ids with a key change in flight. */
+data class ProvidersView(
+    val deviceId: String,
+    val loading: Boolean = true,
+    val info: ProvidersInfo? = null,
+    val error: ContentError? = null,
+    val busy: Set<String> = emptySet(),
+    val loadedAt: Long = 0,
+)
+
+/** The full detail of one request (GET /v1/approvals/:id/detail). */
+data class ApprovalDetailView(val loading: Boolean = true, val detail: ApprovalDetail? = null, val error: ContentError? = null)
+
+/** "New session" from the phone: sent, waiting for the PC to create it, failed, or created (then opened). */
+sealed interface NewSessionState {
+    data object Sending : NewSessionState
+    data class Waiting(val projectId: String, val known: Set<String>, val commandId: String, val sentAt: Long, val deviceOnline: Boolean) : NewSessionState
+    data class Failed(val message: String) : NewSessionState
+    data class Created(val sessionId: String) : NewSessionState
+}
 
 /** A project file opened on the phone, read live from the PC. View only — the phone never edits files. */
 data class FileView(
@@ -193,13 +220,32 @@ class BambooStore(
     private val _myDeviceId = MutableStateFlow(store.deviceId)
     val myDeviceId: StateFlow<String?> = _myDeviceId
 
+    private val _providers = MutableStateFlow<Map<String, ProvidersView>>(emptyMap())
+    /** AI providers per PC (device id). */
+    val providers: StateFlow<Map<String, ProvidersView>> = _providers
+    private val _approvalDetails = MutableStateFlow<Map<String, ApprovalDetailView>>(emptyMap())
+    val approvalDetails: StateFlow<Map<String, ApprovalDetailView>> = _approvalDetails
+    private val _webOnline = MutableStateFlow<Boolean?>(null)
+    /** The website is open (presence.changed). */
+    val webOnline: StateFlow<Boolean?> = _webOnline
+    private val _newSession = MutableStateFlow<NewSessionState?>(null)
+    val newSession: StateFlow<NewSessionState?> = _newSession
+    /** Provider key commands in flight: command id to (device id, provider id, type). */
+    private val providerOps = HashMap<String, Triple<String, String, String>>()
+    private val sendGuard = SendGuard()
+
+    // Realtime-driven reloads are coalesced (about 1 s) and never cancelled by newer events.
+    private val historyCo = Coalescer(scope, 1000) { _detail.value?.sessionId?.let { fetchHistory(it) } }
+    private val fileMapCo = Coalescer(scope, 1000) { _detail.value?.takeIf { it.fileMap != null }?.sessionId?.let { fetchFileMap(it) } }
+    private val transcriptCo = Coalescer(scope, 600) { _detail.value?.sessionId?.let { fetchContent(it, partsOnly = true) } }
+    private var lastRefresh = 0L
+
     private var started = false
     private val _file = MutableStateFlow<FileView?>(null)
     val file: StateFlow<FileView?> = _file
     private var presenceJob: Job? = null
     private var listenJobs: List<Job> = emptyList()
     private var historyJob: Job? = null
-    private var historyQueued = false
     private var versionsJob: Job? = null
     private var contentJob: Job? = null
     private var fileMapJob: Job? = null
@@ -263,7 +309,18 @@ class BambooStore(
         _loaded.value = false
     }
 
+    /**
+     * The app came to the foreground: make sure realtime is running (it resumes with ?after=<seq>), and re-read
+     * the authoritative state when it may be stale (after the app was in the background).
+     */
+    fun onForeground() {
+        if (!started || auth.session.value == null) return
+        if (!realtime.isRunning) realtime.start()
+        if (android.os.SystemClock.elapsedRealtime() - lastRefresh > FOREGROUND_REFRESH_MS) refreshAll()
+    }
+
     fun refreshAll() = scope.launch {
+        lastRefresh = android.os.SystemClock.elapsedRealtime()
         _refreshing.value = true
         runCatching {
             _overview.value = api.overview()
@@ -277,6 +334,8 @@ class BambooStore(
         }.onFailure { report("Refresh failed", it) }
         _refreshing.value = false
         _detail.value?.let { loadSession(it.sessionId, keep = true) }
+        // Providers shown on screen are re-read too (a reconnect may follow a PC update).
+        _providers.value.keys.forEach { loadProviders(it, force = true) }
         if (_profile.value.account == null) loadProfile()
     }
 
@@ -291,18 +350,20 @@ class BambooStore(
         val d = _detail.value
         // Re-opening right after a load (e.g. the phone was rotated) keeps what is shown.
         if (d?.sessionId == id && d.loadedAt > 0 && android.os.SystemClock.elapsedRealtime() - d.loadedAt < REOPEN_FRESH_MS) return
-        if (d?.sessionId != id) _detail.value = SessionDetail(sessionId = id)
+        if (d?.sessionId != id) _detail.value = SessionDetail(sessionId = id, model = store.sessionModel(id))
         loadSession(id, keep = true)
     }
 
     fun closeSession() {
+        historyCo.cancel()
+        fileMapCo.cancel()
+        transcriptCo.cancel()
         contentJob?.cancel()
         fileMapJob?.cancel()
         diagramJob?.cancel()
         treeJob?.cancel()
         fileJob?.cancel()
         historyJob?.cancel()
-        historyQueued = false
         versionsJob?.cancel()
         _detail.value = null
         _versions.value = null
@@ -322,19 +383,25 @@ class BambooStore(
      */
     fun loadFileMap(delayMs: Long = 0) {
         val id = _detail.value?.sessionId ?: return
+        if (delayMs > 0) {
+            if (_detail.value?.fileMap != null) fileMapCo.request()
+            return
+        }
         fileMapJob?.cancel()
         _detail.update { d -> if (d?.sessionId == id) d.copy(fileMap = (d.fileMap ?: FileMapView()).copy(loading = true)) else d }
-        fileMapJob = scope.launch {
-            if (delayMs > 0) delay(delayMs)
-            try {
-                val entries = api.fileMap(id)
-                _detail.update { d -> if (d?.sessionId == id) d.copy(fileMap = FileMapView(loading = false, loaded = true, entries = entries)) else d }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val err = contentError(e, "Could not read the file map from ${pcName(_detail.value?.session?.deviceId)}.")
-                _detail.update { d -> if (d?.sessionId == id) d.copy(fileMap = (d.fileMap ?: FileMapView()).copy(loading = false, error = err)) else d }
-            }
+        fileMapJob = scope.launch { fetchFileMap(id) }
+    }
+
+    private suspend fun fetchFileMap(id: String) {
+        _detail.update { d -> if (d?.sessionId == id) d.copy(fileMap = (d.fileMap ?: FileMapView()).copy(loading = true)) else d }
+        try {
+            val entries = api.fileMap(id)
+            _detail.update { d -> if (d?.sessionId == id) d.copy(fileMap = FileMapView(loading = false, loaded = true, entries = entries)) else d }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val err = contentError(e, "Could not read the file map from ${pcName(_detail.value?.session?.deviceId)}.")
+            _detail.update { d -> if (d?.sessionId == id) d.copy(fileMap = (d.fileMap ?: FileMapView()).copy(loading = false, error = err)) else d }
         }
     }
 
@@ -412,21 +479,32 @@ class BambooStore(
      */
     fun loadHistory(delayMs: Long = 0) {
         val id = _detail.value?.sessionId ?: return
-        if (delayMs > 0 && historyJob?.isActive == true) {
-            historyQueued = true
+        if (delayMs > 0) {
+            historyCo.request()
             return
         }
         historyJob?.cancel()
-        historyQueued = false
-        if (delayMs == 0L) _detail.update { d -> if (d?.sessionId == id) d.copy(history = d.history.copy(loading = true)) else d }
-        historyJob = scope.launch {
-            if (delayMs > 0) delay(delayMs)
-            while (true) {
-                historyQueued = false
-                fetchHistory(id)
-                if (!historyQueued || _detail.value?.sessionId != id) break
-                delay(HISTORY_REFRESH_MS)
-            }
+        _detail.update { d -> if (d?.sessionId == id) d.copy(history = d.history.copy(loading = true)) else d }
+        historyJob = scope.launch { fetchHistory(id) }
+    }
+
+    /** Reads the open session's todo list from the PC (on open, reconnect and when the PC comes online). */
+    fun loadTodos() {
+        val id = _detail.value?.sessionId ?: return
+        scope.launch { fetchTodos(id) }
+    }
+
+    private suspend fun fetchTodos(id: String) {
+        val startedAt = _detail.value?.takeIf { it.sessionId == id }?.todos?.version ?: return
+        _detail.update { d -> if (d?.sessionId == id) d.copy(todos = TodoReducer.loading(d.todos)) else d }
+        try {
+            val list = api.todos(id).todos
+            _detail.update { d -> if (d?.sessionId == id) d.copy(todos = TodoReducer.fetched(d.todos, list, startedAt)) else d }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val err = contentError(e, "Could not read the todo list from ${pcName(_detail.value?.session?.deviceId)}.")
+            _detail.update { d -> if (d?.sessionId == id) d.copy(todos = TodoReducer.failed(d.todos, err)) else d }
         }
     }
 
@@ -468,6 +546,7 @@ class BambooStore(
 
     private fun loadSession(id: String, keep: Boolean) = scope.launch {
         loadHistory()
+        loadTodos()
         runCatching {
             val session = api.session(id)
             val approvals = api.approvals().filter { it.sessionId == id }
@@ -490,24 +569,26 @@ class BambooStore(
      */
     private fun loadContent(id: String, partsOnly: Boolean = false) {
         contentJob?.cancel()
+        contentJob = scope.launch { fetchContent(id, partsOnly) }
+    }
+
+    private suspend fun fetchContent(id: String, partsOnly: Boolean) {
         _detail.update { d -> if (d?.sessionId == id) d.copy(contentLoading = true) else d }
-        contentJob = scope.launch {
-            try {
-                val (parts, changes) = coroutineScope {
-                    val p = async { api.parts(id) }
-                    val c = async { if (partsOnly) null else api.changes(id) }
-                    p.await() to c.await()
-                }
-                _detail.update { d ->
-                    if (d?.sessionId != id) d
-                    else d.copy(parts = parts, changes = changes ?: d.changes, contentLoading = false, contentLoaded = true, contentError = null)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val err = contentError(e, "Could not read this session from ${pcName(_detail.value?.session?.deviceId)}.")
-                _detail.update { d -> if (d?.sessionId == id) d.copy(contentLoading = false, contentError = err) else d }
+        try {
+            val (parts, changes) = coroutineScope {
+                val p = async { api.parts(id) }
+                val c = async { if (partsOnly) null else api.changes(id) }
+                p.await() to c.await()
             }
+            _detail.update { d ->
+                if (d?.sessionId != id) d
+                else d.copy(parts = mergeTranscript(d.parts, parts), changes = changes ?: d.changes, contentLoading = false, contentLoaded = true, contentError = null)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val err = contentError(e, "Could not read this session from ${pcName(_detail.value?.session?.deviceId)}.")
+            _detail.update { d -> if (d?.sessionId == id) d.copy(contentLoading = false, contentError = err) else d }
         }
     }
 
@@ -532,24 +613,189 @@ class BambooStore(
         }
     }
 
-    /** Sends a chat message to the agent. [onResult] gets true when the API accepted it (the box is then cleared). */
+    /**
+     * Sends a chat message to the agent (with the model picked for this session, if any). Duplicate sends are
+     * refused: one at a time, and the same text not again within a moment. [onResult] gets true when the API
+     * accepted it (the box is then cleared).
+     */
     fun sendMessage(text: String, onResult: (Boolean) -> Unit) {
         val d = _detail.value ?: return onResult(false)
         val body = text.trim()
         if (body.isEmpty()) return onResult(false)
-        _detail.update { it?.copy(sending = true) }
+        if (!sendGuard.tryBegin(d.sessionId + "\u0000" + body)) return onResult(false)
+        _detail.update { if (it?.sessionId == d.sessionId) it.copy(sending = true, send = SendState.Sending) else it }
         scope.launch {
-            runCatching { api.sendCommand(d.sessionId, "SEND_MESSAGE", buildJsonObject { put("text", body) }) }
+            val model = _detail.value?.takeIf { it.sessionId == d.sessionId }?.model
+            runCatching { api.sendCommand(d.sessionId, "SEND_MESSAGE", ApiClient.messagePayload(body, model)) }
                 .onSuccess { res ->
+                    sendGuard.finish(true)
                     track(PendingCommand(res.data.id, "SEND_MESSAGE", res.data.status, deviceOnline = res.deviceOnline))
+                    val sent = SendState.Sent(android.os.SystemClock.elapsedRealtime(), res.deviceOnline)
+                    _detail.update { if (it?.sessionId == d.sessionId) it.copy(sending = false, send = sent) else it }
                     if (!res.deviceOnline) _messages.tryEmit("${pcName(d.session?.deviceId)} is offline. The message is sent if it reconnects within 5 minutes.")
                     onResult(true)
+                    delay(SENT_SHOWN_MS)
+                    _detail.update { if (it?.send == sent) it.copy(send = SendState.Idle) else it }
                 }
-                .onFailure {
-                    handleCommandFailure(d.sessionId, "Could not send the message", it)
+                .onFailure { e ->
+                    sendGuard.finish(false)
+                    val msg = if ((e as? ApiException)?.code == "SESSION_NOT_CONTINUED") "Continue this session on your PC first." else commandError("Not sent", e)
+                    _detail.update { if (it?.sessionId == d.sessionId) it.copy(sending = false, send = SendState.Failed(msg, body)) else it }
+                    handleCommandFailure(d.sessionId, "Could not send the message", e)
                     onResult(false)
                 }
-            _detail.update { it?.copy(sending = false) }
+        }
+    }
+
+    fun clearSendError() {
+        _detail.update { if (it?.send is SendState.Failed) it.copy(send = SendState.Idle) else it }
+    }
+
+    /** Picks the model for the open session; remembered on this phone for that session. */
+    fun selectModel(model: ModelRef?) {
+        val id = _detail.value?.sessionId ?: return
+        store.setSessionModel(id, model)
+        _detail.update { if (it?.sessionId == id) it.copy(model = model) else it }
+    }
+
+    // ---------------------------------------------------------------- new session, providers, request details
+
+    /**
+     * Starts a new session in [project] on its PC. The PC creates it and reports it with session.updated;
+     * the first session of that project that was not known before is the new one (its server id is used).
+     */
+    fun startSession(project: Project, text: String, model: ModelRef?) {
+        val body = text.trim()
+        val cur = _newSession.value
+        if (body.isEmpty() || cur == NewSessionState.Sending || cur is NewSessionState.Waiting) return
+        _newSession.value = NewSessionState.Sending
+        val known = _sessions.value.filter { it.projectId == project.id }.map { it.id }.toSet()
+        scope.launch {
+            runCatching { api.createSession(project.id, body, model) }
+                .onSuccess { res ->
+                    val sentAt = android.os.SystemClock.elapsedRealtime()
+                    _newSession.value = NewSessionState.Waiting(project.id, known, res.data.id, sentAt, res.deviceOnline)
+                    if (!res.deviceOnline) _messages.tryEmit("${pcName(project.deviceId)} is offline. The session starts if it reconnects within 5 minutes.")
+                    delay(NEW_SESSION_TIMEOUT_MS)
+                    val now = _newSession.value
+                    if (now is NewSessionState.Waiting && now.sentAt == sentAt) {
+                        // Re-read once in case the event was missed.
+                        val fresh = runCatching { api.sessions(project.id) }.getOrNull().orEmpty().firstOrNull { it.id !in known }
+                        _newSession.value = if (fresh != null) NewSessionState.Created(fresh.id)
+                        else NewSessionState.Failed("${pcName(project.deviceId)} didn't start the session within a minute. Make sure BambooKit Desktop is open and up to date, then try again.")
+                    }
+                }
+                .onFailure { _newSession.value = NewSessionState.Failed(commandError("Could not start the session", it)) }
+        }
+    }
+
+    fun clearNewSession() {
+        _newSession.value = null
+    }
+
+    /** Reads a PC's providers and models. [force] re-reads even when a recent list is shown. */
+    fun loadProviders(deviceId: String, force: Boolean = false) {
+        val cur = _providers.value[deviceId]
+        if (!force && cur != null && (cur.loading || (cur.info != null && android.os.SystemClock.elapsedRealtime() - cur.loadedAt < 60_000))) return
+        _providers.update { it + (deviceId to (cur ?: ProvidersView(deviceId)).copy(loading = true)) }
+        scope.launch {
+            try {
+                val info = api.providers(deviceId)
+                _providers.update { m -> m + (deviceId to (m[deviceId] ?: ProvidersView(deviceId)).copy(loading = false, info = info, error = null, loadedAt = android.os.SystemClock.elapsedRealtime())) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = contentError(e, "Could not read the AI providers from ${pcName(deviceId)}.")
+                _providers.update { m -> m + (deviceId to (m[deviceId] ?: ProvidersView(deviceId)).copy(loading = false, error = err)) }
+            }
+        }
+    }
+
+    private fun providerBusy(deviceId: String, providerId: String, busy: Boolean) {
+        _providers.update { m ->
+            val v = m[deviceId] ?: ProvidersView(deviceId, loading = false)
+            m + (deviceId to v.copy(busy = if (busy) v.busy + providerId else v.busy - providerId))
+        }
+    }
+
+    /**
+     * Encrypts [apiKey] for the PC (RSA-OAEP-256 + AES-256-GCM) and sends it. The characters are wiped here
+     * whatever happens; the key is never logged or stored on the phone. [onDone] gets null when BambooKit
+     * accepted the command, else a readable reason.
+     */
+    fun setProviderKey(pc: Device, providerId: String, apiKey: CharArray, onDone: (String?) -> Unit) {
+        val pem = pc.encryptionKey
+        if (pem.isNullOrBlank()) {
+            apiKey.fill('\u0000')
+            onDone("Update BambooKit Desktop on ${pc.name} to set provider keys from your phone.")
+            return
+        }
+        providerBusy(pc.id, providerId, true)
+        scope.launch {
+            val envelope = try {
+                withContext(Dispatchers.Default) { KeyEnvelopes.seal(apiKey, pem) }
+            } catch (e: Exception) {
+                null
+            } finally {
+                apiKey.fill('\u0000')
+            }
+            if (envelope == null) {
+                providerBusy(pc.id, providerId, false)
+                onDone("Could not encrypt the key for ${pc.name}. Refresh the PC's details and try again.")
+                return@launch
+            }
+            val payload = buildJsonObject {
+                put("providerID", providerId)
+                put("envelope", buildJsonObject { put("alg", envelope.alg); put("key", envelope.key); put("iv", envelope.iv); put("data", envelope.data) })
+            }
+            runCatching { api.deviceCommand(pc.id, "SET_PROVIDER_KEY", payload) }
+                .onSuccess { res ->
+                    providerOps[res.data.id] = Triple(pc.id, providerId, "SET_PROVIDER_KEY")
+                    if (!res.deviceOnline) _messages.tryEmit("${pc.name} is offline. The key is saved there if it reconnects within 5 minutes.")
+                    onDone(null)
+                }
+                .onFailure { e ->
+                    providerBusy(pc.id, providerId, false)
+                    onDone(
+                        when ((e as? ApiException)?.code) {
+                            "ENCRYPTION_KEY_MISSING" -> "Update BambooKit Desktop on ${pc.name} to set provider keys from your phone."
+                            else -> commandError("Could not send the key", e)
+                        },
+                    )
+                }
+        }
+    }
+
+    fun removeProviderKey(pc: Device, providerId: String) {
+        providerBusy(pc.id, providerId, true)
+        scope.launch {
+            runCatching { api.deviceCommand(pc.id, "REMOVE_PROVIDER_KEY", buildJsonObject { put("providerID", providerId) }) }
+                .onSuccess { res ->
+                    providerOps[res.data.id] = Triple(pc.id, providerId, "REMOVE_PROVIDER_KEY")
+                    if (!res.deviceOnline) _messages.tryEmit("${pc.name} is offline. The key is removed if it reconnects within 5 minutes.")
+                }
+                .onFailure { e ->
+                    providerBusy(pc.id, providerId, false)
+                    _messages.tryEmit(commandError("Could not remove the key", e))
+                }
+        }
+    }
+
+    /** Reads (or re-reads) a request's full detail from the PC. */
+    fun loadApprovalDetail(id: String, force: Boolean = false) {
+        val cur = _approvalDetails.value[id]
+        if (!force && cur != null && (cur.loading || cur.detail != null)) return
+        _approvalDetails.update { it + (id to (cur ?: ApprovalDetailView()).copy(loading = true)) }
+        scope.launch {
+            try {
+                val detail = api.approvalDetail(id)
+                _approvalDetails.update { it + (id to ApprovalDetailView(loading = false, detail = detail)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = contentError(e, "Could not read this request from your PC.")
+                _approvalDetails.update { it + (id to (it[id] ?: ApprovalDetailView()).copy(loading = false, error = err)) }
+            }
         }
     }
 
@@ -863,8 +1109,12 @@ class BambooStore(
                         // remote = true confirms "Continue on PC".
                         else d.copy(session = s, continueRequest = d.continueRequest?.takeUnless { s.remote })
                     }
-                    // Busy sessions send many updates (current action); the history is re-read at most every few seconds.
+                    // Busy sessions send many updates (current action); the history is re-read at most about once a second.
                     if (_detail.value?.sessionId == s.id) loadHistory(delayMs = 1000)
+                    // A session started from this phone: open it once the PC reports it.
+                    (_newSession.value as? NewSessionState.Waiting)?.let { w ->
+                        if (s.projectId == w.projectId && s.id !in w.known) _newSession.value = NewSessionState.Created(s.id)
+                    }
                     refreshOverviewSoon()
                 }
                 "session.removed" -> {
@@ -876,7 +1126,10 @@ class BambooStore(
                     val before = _detail.value
                     _detail.update { d ->
                         if (d?.sessionId != p.sessionId) d
-                        else d.copy(parts = (d.parts.filterNot { it.id == p.id } + p).sortedBy { it.sortKey })
+                        else {
+                            val old = d.parts.firstOrNull { it.id == p.id }
+                            d.copy(parts = (d.parts.filterNot { it.id == p.id } + (old?.mergeLive(p) ?: p)).sortedBy { it.sortKey })
+                        }
                     }
                     // A live part means the PC is reachable again: read the whole chat rather than show a fragment.
                     if (before?.sessionId == p.sessionId && before.contentError != null && !before.contentLoading) loadContent(p.sessionId)
@@ -884,16 +1137,18 @@ class BambooStore(
                 "session.transcript" -> {
                     val id = event.sessionId
                     if (id != null && _detail.value?.sessionId == id) {
-                        loadContent(id, partsOnly = true)
-                        loadHistory(delayMs = 1500)
-                        if (_detail.value?.fileMap != null) loadFileMap(delayMs = 800)
+                        transcriptCo.request()
+                        loadHistory(delayMs = 1000)
+                        loadFileMap(delayMs = 1000)
                     }
                 }
                 "session.diff" -> {
                     val files = json.decodeFromJsonElement<DiffPayload>(event.payload).files
                     _detail.update { d -> if (d != null && d.sessionId == event.sessionId) d.copy(changes = files) else d }
-                    if (_detail.value?.sessionId == event.sessionId) loadHistory(delayMs = 1500)
-                    if (_detail.value?.sessionId == event.sessionId && _detail.value?.fileMap != null) loadFileMap(delayMs = 800)
+                    if (_detail.value?.sessionId == event.sessionId) {
+                        loadHistory(delayMs = 1000)
+                        loadFileMap(delayMs = 1000)
+                    }
                     refreshOverviewSoon()
                 }
                 "approval.created", "approval.updated" -> {
@@ -908,14 +1163,35 @@ class BambooStore(
                             else d.copy(approvals = if (a.isPending) listOf(a) + d.approvals.filterNot { it.id == a.id } else d.approvals.filterNot { it.id == a.id })
                         }
                     }
-                    refreshApprovals()
+                    scope.launch { refreshApprovals() }
                     refreshOverviewSoon()
+                }
+                "session.todos" -> {
+                    val t = json.decodeFromJsonElement<TodosEvent>(event.payload).let { if (it.sessionId.isBlank()) it.copy(sessionId = event.sessionId.orEmpty()) else it }
+                    _detail.update { d -> if (d == null) d else d.copy(todos = TodoReducer.live(d.todos, d.sessionId, t)) }
+                }
+                "presence.changed" -> {
+                    val o = event.payload
+                    if (o.str("kind") == "web") _webOnline.value = o.bool("online")
                 }
                 "command.updated" -> {
                     val c = json.decodeFromJsonElement<CommandUpdate>(event.payload)
                     _detail.update { d ->
                         if (d == null || d.commands.none { it.id == c.id }) d
                         else d.copy(commands = d.commands.map { if (it.id == c.id) it.copy(status = c.status, error = c.error) else it })
+                    }
+                    providerOps[c.id]?.let { (deviceId, providerId, type) ->
+                        if (c.status != "PENDING") {
+                            providerOps.remove(c.id)
+                            providerBusy(deviceId, providerId, false)
+                            if (c.status == "SUCCEEDED") {
+                                _messages.tryEmit(if (type == "SET_PROVIDER_KEY") "Key saved on ${pcName(deviceId)}" else "Key removed from ${pcName(deviceId)}")
+                                loadProviders(deviceId, force = true)
+                            } else _messages.tryEmit("${pcName(deviceId)} could not ${if (type == "SET_PROVIDER_KEY") "save" else "remove"} the key: ${c.error ?: "failed"}")
+                        }
+                    }
+                    (_newSession.value as? NewSessionState.Waiting)?.let { w ->
+                        if (c.id == w.commandId && c.status == "FAILED") _newSession.value = NewSessionState.Failed("Your PC could not start the session: ${c.error ?: "failed"}")
                     }
                     if (c.type == "RENAME_SESSION" && c.status == "FAILED") {
                         event.sessionId?.let { id -> _renames.update { it - id } }
@@ -936,13 +1212,18 @@ class BambooStore(
                     val p = json.decodeFromJsonElement<Project>(event.payload)
                     _projects.update { list -> (listOf(p) + list.filterNot { it.id == p.id }) }
                 }
-                "device.status", "device.registered", "device.updated", "device.revoked", "device.unlinked", "pairing.completed" -> {
-                    _devices.value = api.devices()
+                "device.status", "device.registered", "device.updated", "device.revoked", "device.unlinked", "pairing.completed" -> scope.launch {
+                    // Off the event collector: a slow request must never hold up (and drop) later events.
+                    val wasOnline = _devices.value.associate { it.id to it.online }
+                    runCatching { _devices.value = api.devices() }
                     refreshOverviewSoon()
+                    // A PC came online: its providers can be read again.
+                    _devices.value.filter { it.online && wasOnline[it.id] != true && _providers.value[it.id] != null }.forEach { loadProviders(it.id, force = true) }
                     // The session's PC came back online: read the chat that could not be read before.
                     val d = _detail.value
                     if (d != null && desktopOf(d.session)?.online == true) {
                         if (d.contentError?.desktopUnavailable == true && !d.contentLoading) loadContent(d.sessionId)
+                        if (!d.todos.loading && (d.todos.error != null || wasOnline[d.session?.deviceId] != true)) loadTodos()
                         if ((d.history.error != null || d.history.data?.live == false) && !d.history.loading) loadHistory()
                         if (d.fileMap?.error?.desktopUnavailable == true && !d.fileMap.loading) loadFileMap()
                         if (d.diagram?.error?.desktopUnavailable == true && !d.diagram.loading) loadDiagram()
@@ -992,8 +1273,27 @@ class BambooStore(
     }
 }
 
-/** Pause between history re-reads while realtime events keep arriving for the open session. */
-private const val HISTORY_REFRESH_MS = 3000L
+/** How long "Sent" stays on the send button. */
+private const val SENT_SHOWN_MS = 2000L
+
+/** How long "Starting on your PC..." waits for a new session. */
+const val NEW_SESSION_TIMEOUT_MS = 60_000L
+
+/** Coming back to the app after this long re-reads everything. */
+private const val FOREGROUND_REFRESH_MS = 20_000L
+
+/**
+ * A transcript read merged with what is shown: the read is authoritative for every part it contains, but live
+ * parts newer than it (updatedAt) keep their state, and live parts after the end of the read stay.
+ */
+internal fun mergeTranscript(shown: List<Part>, fetched: List<Part>): List<Part> {
+    val byId = shown.associateBy { it.id }
+    val fetchedIds = fetched.map { it.id }.toSet()
+    val lastKey = fetched.maxOfOrNull { it.sortKey } ?: ""
+    val merged = fetched.map { p -> byId[p.id]?.takeIf { (it.updatedAt ?: "") > (p.updatedAt ?: "") }?.let { p.mergeLive(it) } ?: p } +
+        shown.filter { it.id !in fetchedIds && it.sortKey > lastKey }
+    return merged.sortedBy { it.sortKey }
+}
 
 /** How long "Renaming on your PC..." waits for the new title. */
 const val RENAME_TIMEOUT_MS = 30_000L
@@ -1010,6 +1310,8 @@ fun commandLabel(type: String): String = when (type) {
     "RETRY" -> "Retry"
     "SEND_MESSAGE" -> "Message"
     "CONTINUE_ON_PC" -> "Continue on PC"
+    "RENAME_SESSION" -> "Rename"
+    "CREATE_SESSION" -> "New session"
     else -> type.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 

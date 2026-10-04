@@ -60,6 +60,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.bambookit.android.data.FileChange
+import com.bambookit.android.data.DiffCode
+import com.bambookit.android.data.DiffHunkHeader
+import com.bambookit.android.data.DiffLine
+import com.bambookit.android.data.DiffNote
+import com.bambookit.android.data.DiffSection
+import com.bambookit.android.data.parseUnifiedDiff
 import com.bambookit.android.data.FileEdit
 import com.bambookit.android.data.VersionsView
 import com.bambookit.android.presentation.theme.BambooBorder
@@ -125,58 +131,7 @@ internal fun PlusMinus(additions: Int, deletions: Int, size: Int = 12) {
 
 // ================================================================== unified diff
 
-internal sealed interface DiffLine
-internal data class DiffCode(val type: Char, val oldNo: Int?, val newNo: Int?, val text: String) : DiffLine
-internal data class DiffHunkHeader(val text: String) : DiffLine
-internal data class DiffSection(val text: String) : DiffLine
-internal data class DiffNote(val text: String) : DiffLine
-
-private val hunkRe = Regex("^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@(.*)$")
 private const val MAX_DIFF_LINE = 2000
-
-/**
- * Parses a unified diff into display lines with old/new line numbers. File headers (Index:, ===,
- * ---, +++, diff --git) are skipped; only hunks are shown.
- */
-internal fun parseUnifiedDiff(patch: String): List<DiffLine> {
-    val out = mutableListOf<DiffLine>()
-    var inHunk = false
-    var oldNo = 0
-    var newNo = 0
-    var oldLeft = 0
-    var newLeft = 0
-    for (raw in patch.split("\n")) {
-        val line = raw.removeSuffix("\r")
-        val h = hunkRe.find(line)
-        if (h != null) {
-            oldNo = h.groupValues[1].toInt()
-            oldLeft = h.groupValues[2].ifEmpty { "1" }.toInt()
-            newNo = h.groupValues[3].toInt()
-            newLeft = h.groupValues[4].ifEmpty { "1" }.toInt()
-            inHunk = true
-            out += DiffHunkHeader(line)
-            continue
-        }
-        if (!inHunk) continue
-        if (line.startsWith("\\")) {
-            out += DiffNote(line.removePrefix("\\").trim())
-            continue
-        }
-        if (oldLeft <= 0 && newLeft <= 0) {
-            inHunk = false
-            continue
-        }
-        val type = line.firstOrNull() ?: ' '
-        val text = if (line.isEmpty()) "" else line.substring(1)
-        when (type) {
-            '+' -> { out += DiffCode('+', null, newNo++, text); newLeft-- }
-            '-' -> { out += DiffCode('-', oldNo++, null, text); oldLeft-- }
-            ' ' -> { out += DiffCode(' ', oldNo++, newNo++, text); oldLeft--; newLeft-- }
-            else -> inHunk = false
-        }
-    }
-    return out
-}
 
 internal fun editLabel(index: Int, e: FileEdit): String =
     listOfNotNull("Change ${index + 1}", shortClock(parseInstant(e.time)).ifEmpty { null }, e.tool, "(+${e.additions} −${e.deletions})").joinToString(" · ").replace(" · (", " (")

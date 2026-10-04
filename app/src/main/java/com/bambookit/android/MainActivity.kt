@@ -103,6 +103,8 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         (application as BambooKitApp).lock.onForeground()
+        // Back from the background: resume realtime and re-read anything that may be stale.
+        (application as BambooKitApp).store.onForeground()
     }
 
     override fun onStop() {

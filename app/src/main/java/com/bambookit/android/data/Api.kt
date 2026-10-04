@@ -151,6 +151,23 @@ class ApiClient(
     suspend fun sendCommand(sessionId: String, type: String, payload: JsonObject = JsonObject(emptyMap())): CommandAccepted =
         call("POST", "/v1/sessions/$sessionId/commands", buildJsonObject { put("type", type); put("payload", payload) }, CommandAccepted.serializer())
 
+    /** The agent's current todo list, live from the PC. */
+    suspend fun todos(sessionId: String): TodoList = relayGet("/v1/sessions/$sessionId/todos")
+
+    /** The PC's AI providers and models (never any keys). Relayed live; can take several seconds. */
+    suspend fun providers(deviceId: String): ProvidersInfo = relayGet("/v1/devices/$deviceId/providers")
+
+    /** Everything the agent attached to a request (full command, proposed diff, question context), live from the PC. */
+    suspend fun approvalDetail(id: String): ApprovalDetail = relayGet("/v1/approvals/$id/detail")
+
+    /** Starts a new session on the PC that owns the project (202: the CREATE_SESSION command). */
+    suspend fun createSession(projectId: String, text: String, model: ModelRef?, agent: String? = null): CommandAccepted =
+        call("POST", "/v1/projects/$projectId/sessions", messagePayload(text, model, agent), CommandAccepted.serializer())
+
+    /** A command for the PC itself (SET_PROVIDER_KEY, REMOVE_PROVIDER_KEY). */
+    suspend fun deviceCommand(deviceId: String, type: String, payload: JsonObject): CommandAccepted =
+        call("POST", "/v1/devices/$deviceId/commands", buildJsonObject { put("type", type); put("payload", payload) }, CommandAccepted.serializer())
+
     suspend fun respondApproval(id: String, reply: String) {
         call("POST", "/v1/approvals/$id/respond", buildJsonObject { put("reply", reply) }, JsonObject.serializer())
     }
@@ -227,6 +244,13 @@ class ApiClient(
     }
 
     companion object {
+        /** Body of SEND_MESSAGE and of a new session: {text, model?: {providerID, modelID}, agent?}. */
+        fun messagePayload(text: String, model: ModelRef?, agent: String? = null): JsonObject = buildJsonObject {
+            put("text", text)
+            if (model != null) putJsonObject("model") { put("providerID", model.providerID); put("modelID", model.modelID) }
+            if (!agent.isNullOrBlank()) put("agent", agent)
+        }
+
         /** Body of POST /v1/approvals/:id/answer. */
         fun answerPayload(answers: List<List<String>>): JsonObject = buildJsonObject {
             put("answers", JsonArray(answers.map { list -> JsonArray(list.map { JsonPrimitive(it) }) }))

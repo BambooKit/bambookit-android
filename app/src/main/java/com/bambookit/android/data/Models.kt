@@ -56,6 +56,8 @@ data class Device(
     val revokedAt: String? = null,
     val linkedDevices: List<LinkedDevice> = emptyList(),
     val activeSession: ActiveSessionRef? = null,
+    /** Desktops only: the PC's RSA public key (SPKI PEM) that provider API keys are encrypted to. Null on older desktops. */
+    val encryptionKey: String? = null,
 )
 
 @Serializable
@@ -110,6 +112,19 @@ data class Part(
     val toolStatus: String? = null,
     val toolTitle: String? = null,
     val sortKey: String,
+    /**
+     * Complete tool details from newer desktops (any of them may be missing on older ones): the tool's input,
+     * its output, the error, a unified diff, the exit code, extra metadata and start/end times.
+     */
+    val input: JsonElement? = null,
+    val output: JsonElement? = null,
+    val error: JsonElement? = null,
+    val diff: String? = null,
+    val exitCode: Int? = null,
+    val metadata: JsonElement? = null,
+    val time: JsonElement? = null,
+    val truncated: Boolean = false,
+    val updatedAt: String? = null,
 )
 
 @Serializable data class ChangedFile(val file: String, val status: String? = null, val additions: Int = 0, val deletions: Int = 0)
@@ -357,5 +372,60 @@ data class FileVersions(
     val after: String? = null,
     val beforeSource: String? = null,
     val note: String? = null,
+    val truncated: Boolean = false,
+)
+
+
+// ================================================================== todos (GET /v1/sessions/:id/todos, realtime session.todos)
+
+/** One item of the agent's todo list. [status]: completed, in_progress, pending or cancelled. */
+@Serializable
+data class Todo(val id: String = "", val content: String = "", val status: String = "pending", val priority: String? = null)
+
+@Serializable data class TodoList(val todos: List<Todo> = emptyList())
+
+@Serializable data class TodosEvent(val sessionId: String = "", val todos: List<Todo> = emptyList())
+
+// ================================================================== AI providers (GET /v1/devices/:id/providers)
+
+@Serializable data class ProviderModel(val id: String, val name: String? = null)
+
+/** A provider the PC knows. [configured]: it has a key (or needs none). Keys are never sent to the phone. */
+@Serializable
+data class AiProvider(
+    val id: String,
+    val name: String? = null,
+    val configured: Boolean = false,
+    val source: String? = null,
+    val models: List<ProviderModel> = emptyList(),
+)
+
+/** A model choice as the engine names it (SEND_MESSAGE / new session payload). */
+@Serializable data class ModelRef(val providerID: String, val modelID: String)
+
+@Serializable data class ConnectableProvider(val id: String, val name: String? = null)
+
+@Serializable
+data class ProvidersInfo(
+    val providers: List<AiProvider> = emptyList(),
+    val default: ModelRef? = null,
+    val connectable: List<ConnectableProvider> = emptyList(),
+)
+
+// ================================================================== request details (GET /v1/approvals/:id/detail)
+
+/**
+ * Everything the agent attached to a request, read live from the PC: for permissions the patterns and
+ * metadata (full command, file path, proposed diff); for questions the full questions and their context.
+ */
+@Serializable
+data class ApprovalDetail(
+    val kind: String? = null,
+    val permission: String? = null,
+    val title: String? = null,
+    val patterns: List<String> = emptyList(),
+    val metadata: JsonElement? = null,
+    val questions: List<QuestionSpec>? = null,
+    val context: JsonElement? = null,
     val truncated: Boolean = false,
 )

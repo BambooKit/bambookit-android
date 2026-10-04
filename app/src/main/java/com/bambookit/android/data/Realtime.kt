@@ -38,7 +38,7 @@ class RealtimeClient(
 ) {
     // Streams stay open indefinitely: no call timeout; the server pings every 20 s.
     private val http = baseHttp.newBuilder().readTimeout(90, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
-    private val _events = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 256)
+    private val _events = MutableSharedFlow<RealtimeEvent>(extraBufferCapacity = 2048)
     val events: SharedFlow<RealtimeEvent> = _events
     private val _state = MutableStateFlow(LinkState.Disconnected)
     val state: StateFlow<LinkState> = _state
