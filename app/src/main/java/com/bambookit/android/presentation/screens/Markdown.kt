@@ -101,7 +101,7 @@ fun MarkdownText(text: String, color: Color = TextPrimary) {
             if (i % 2 == 1) {
                 val language = chunk.substringBefore('\n', "").trim().takeIf { !it.contains(' ') }.orEmpty()
                 val body = (if (chunk.contains('\n')) chunk.substringAfter('\n') else chunk).trimEnd('\n', ' ')
-                CodeBlock(language, body)
+                CollapsibleBlock(body, language.ifBlank { "code" }, collapsedLines = 30)
             } else {
                 chunk.trim('\n').split("\n").forEach { raw ->
                     val line = raw.trimEnd()

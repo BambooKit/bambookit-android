@@ -38,6 +38,13 @@ import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -105,6 +112,8 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
     var focusPrompt by remember { mutableStateOf<String?>(null) }
     var openChange by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmStop by remember { mutableStateOf(false) }
+    var pickingModel by remember { mutableStateOf(false) }
+    val providers by store.providers.collectAsState()
     val d = detail?.takeIf { it.sessionId == sessionId }
     val s = d?.session
     val pc = s?.let { ss -> devices.firstOrNull { it.id == ss.deviceId } }
@@ -185,9 +194,13 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                 // Chat from the phone once the session is continued on the PC.
                 chatTab && s.remote -> {
                     HorizontalDivider(color = BambooBorder)
+                    val providerInfo = providers[s.deviceId]?.info
                     ChatComposer(
                         d, s, showActivity = tab != SessionTabId.Summary,
-                        onSend = store::sendMessage, onContinue = store::continueSession, onRetry = store::retrySession,
+                        modelLabel = d.model?.let { "Model: " + modelLabel(it, providerInfo) } ?: "Model: ${brandModel(s.model) ?: "PC default"}",
+                        onPickModel = { pickingModel = true },
+                        onSend = store::sendMessage, onDismissSendError = store::clearSendError,
+                        onContinue = store::continueSession, onRetry = store::retrySession,
                         onStop = { confirmStop = true },
                     )
                 }
@@ -207,6 +220,12 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
         }
     }
 
+    if (pickingModel && s != null) {
+        ModelPickerSheet(
+            store, s.deviceId, pcTitle, selected = d?.model, currentLabel = brandModel(s.model),
+            onPick = { store.selectModel(it); pickingModel = false }, onDismiss = { pickingModel = false },
+        )
+    }
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },
@@ -302,31 +321,57 @@ private fun ChatTab(d: SessionDetail, pcTitle: String, onRetry: () -> Unit, onRe
 private fun Transcript(parts: List<Part>, agent: String?) {
     val visible = remember(parts) { parts.filter { it.type == "tool" || !it.text.isNullOrBlank() } }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val nearBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
-            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 3
+            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 2
         }
     }
+    // Messages that arrived while the user was reading further up (counted by message, not by part).
+    var seenMessages by remember { mutableStateOf(0) }
+    val messageCount = remember(visible) { visible.map { it.messageId }.distinct().size }
+    LaunchedEffect(nearBottom, messageCount) { if (nearBottom) seenMessages = messageCount }
     var first by remember { mutableStateOf(true) }
-    LaunchedEffect(visible.size, visible.lastOrNull()?.text?.length) {
+    LaunchedEffect(visible.size, visible.lastOrNull()?.text?.length, visible.lastOrNull()?.toolStatus) {
         if (visible.isEmpty()) return@LaunchedEffect
         if (first) listState.scrollToItem(visible.size + 1) else if (nearBottom) listState.animateScrollToItem(visible.size + 1)
         first = false
     }
-    LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.m)) {
-        item { Spacer(Modifier.height(Space.s)) }
-        if (visible.isEmpty()) item { EmptyState("No messages yet", "Prompts and the agent's replies in this session will appear here.", Icons.Filled.SmartToy) }
-        itemsIndexed(visible, key = { _, p -> p.id }) { i, p ->
-            val prev = visible.getOrNull(i - 1)
-            val newMessage = prev == null || prev.messageId != p.messageId
-            val roleChanged = prev == null || prev.role != p.role
-            if (newMessage && i > 0) Spacer(Modifier.height(if (roleChanged) 14.dp else 6.dp))
-            if (p.role != "user" && roleChanged) AgentHeader(agent)
-            PartView(p)
-            Spacer(Modifier.height(5.dp))
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.m)) {
+            item { Spacer(Modifier.height(Space.s)) }
+            if (visible.isEmpty()) item { EmptyState("No messages yet", "Prompts and the agent's replies in this session will appear here.", Icons.Filled.SmartToy) }
+            itemsIndexed(visible, key = { _, p -> p.id }) { i, p ->
+                val prev = visible.getOrNull(i - 1)
+                val newMessage = prev == null || prev.messageId != p.messageId
+                val roleChanged = prev == null || prev.role != p.role
+                if (newMessage && i > 0) Spacer(Modifier.height(if (roleChanged) 14.dp else 6.dp))
+                if (p.role != "user" && roleChanged) AgentHeader(agent)
+                PartView(p)
+                Spacer(Modifier.height(5.dp))
+            }
+            item { Spacer(Modifier.height(Space.m)) }
         }
-        item { Spacer(Modifier.height(Space.m)) }
+        val unseen = (messageCount - seenMessages).coerceAtLeast(0)
+        if (!nearBottom && visible.isNotEmpty()) {
+            JumpToLatest(unseen, Modifier.align(Alignment.BottomEnd).padding(end = Space.m, bottom = Space.m)) {
+                scope.launch { listState.animateScrollToItem(visible.size + 1) }
+            }
+        }
+    }
+}
+
+/** Floating "jump to latest" button with the number of new messages. */
+@Composable
+private fun JumpToLatest(newMessages: Int, modifier: Modifier, onClick: () -> Unit) {
+    BadgedBox(
+        modifier = modifier,
+        badge = { if (newMessages > 0) Badge(containerColor = StatusRunning, contentColor = BambooObsidian) { Text(if (newMessages > 99) "99+" else newMessages.toString()) } },
+    ) {
+        SmallFloatingActionButton(onClick = onClick, containerColor = BambooSurfaceElevated, contentColor = TextPrimary, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Filled.KeyboardArrowDown, if (newMessages > 0) "Jump to latest, $newMessages new" else "Jump to latest")
+        }
     }
 }
 
@@ -342,7 +387,7 @@ private fun AgentHeader(agent: String?) {
 @Composable
 private fun PartView(p: Part) {
     when {
-        p.type == "tool" -> ToolRow(p)
+        p.type == "tool" -> ToolCard(p)
         p.type == "reasoning" -> ReasoningRow(p.text.orEmpty())
         p.role == "user" -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
             Column(
@@ -359,40 +404,20 @@ private fun PartView(p: Part) {
 }
 
 @Composable
-private fun ToolRow(p: Part) {
-    val shape = RoundedCornerShape(10.dp)
-    Column(Modifier.fillMaxWidth().clip(shape).background(BambooSurface).border(1.dp, BambooBorder, shape).padding(horizontal = 10.dp, vertical = 7.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            when (p.toolStatus) {
-                "running", "pending" -> CircularProgressIndicator(Modifier.size(13.dp), color = StatusRunning, strokeWidth = 1.5.dp)
-                "completed" -> Icon(Icons.Filled.CheckCircle, "Done", tint = StatusSuccess, modifier = Modifier.size(14.dp))
-                "error" -> Icon(Icons.Filled.ErrorOutline, "Failed", tint = StatusFailed, modifier = Modifier.size(14.dp))
-                else -> Icon(Icons.Filled.Build, null, tint = TextMuted, modifier = Modifier.size(14.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(p.tool ?: "tool", color = TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            p.toolTitle?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.width(8.dp))
-                Mono(it, color = TextSecondary, size = 12, maxLines = 1, modifier = Modifier.weight(1f))
-            }
-        }
-        if (p.toolStatus == "error" && !p.text.isNullOrBlank()) Mono(p.text, color = StatusFailed, size = 11, maxLines = 4, modifier = Modifier.padding(top = 4.dp, start = 22.dp))
-    }
-}
-
-@Composable
 private fun ReasoningRow(text: String) {
     var open by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { open = !open }.padding(horizontal = 4.dp, vertical = 4.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = if (open) "Collapse thinking" else "Expand thinking") { open = !open }.padding(horizontal = 4.dp, vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 36.dp)) {
             Icon(Icons.Filled.Psychology, null, tint = TextMuted, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(6.dp))
             Text("Thinking", color = TextMuted, fontSize = 12.sp, fontStyle = FontStyle.Italic)
             Icon(if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, if (open) "Collapse" else "Expand", tint = TextMuted, modifier = Modifier.size(16.dp))
         }
-        Text(
+        if (open) SelectionContainer {
+            Text(text, color = TextSecondary, fontSize = 12.sp, fontStyle = FontStyle.Italic, lineHeight = 17.sp, modifier = Modifier.padding(start = 20.dp, top = 2.dp))
+        } else Text(
             text, color = TextMuted, fontSize = 12.sp, fontStyle = FontStyle.Italic, lineHeight = 17.sp,
-            maxLines = if (open) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 20.dp, top = 2.dp),
         )
     }
 }
