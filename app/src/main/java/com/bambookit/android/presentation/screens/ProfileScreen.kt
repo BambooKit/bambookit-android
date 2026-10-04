@@ -79,6 +79,7 @@ import com.bambookit.android.presentation.theme.LockScrim
 import com.bambookit.android.presentation.theme.StatusFailed
 import com.bambookit.android.presentation.theme.StatusSuccess
 import com.bambookit.android.presentation.theme.StatusWarning
+import com.bambookit.android.presentation.theme.StatusWarningTint
 import com.bambookit.android.presentation.theme.TextMuted
 import com.bambookit.android.presentation.theme.TextPrimary
 import com.bambookit.android.presentation.theme.TextSecondary
@@ -159,8 +160,11 @@ private fun providerLabel(provider: String?): String = when (provider) {
 
 /** The signed-in user's profile: photo, account facts, sign out and account deletion. */
 @Composable
-fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onBack: () -> Unit, onSignOut: () -> Unit) {
+fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onBack: () -> Unit, onSignOut: () -> Unit, onOpenProject: (String) -> Unit = {}) {
     val profile by store.profile.collectAsState()
+    val stats by store.stats.collectAsState()
+    val projects by store.projects.collectAsState()
+    var showUpdates by remember { mutableStateOf(false) }
     val session by store.session.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -169,8 +173,15 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
     var preparing by remember { mutableStateOf(false) }
     var providersFor by remember { mutableStateOf<String?>(null) }
     val account: Account? = profile.account
-    LaunchedEffect(Unit) { store.loadProfile() }
+    LaunchedEffect(Unit) {
+        store.loadProfile()
+        store.loadStats()
+    }
     BackHandler(onBack = onBack)
+    if (showUpdates) {
+        UpdateScreen(updater, onBack = { showUpdates = false })
+        return
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -189,7 +200,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
             "Profile", account?.email ?: session?.email,
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
         )
-        RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile() }) {
+        RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats() }) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
                 item {
                     Column(Modifier.fillMaxWidth().padding(top = Space.m), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -202,6 +213,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
                         Spacer(Modifier.height(Space.m))
                         Text(account?.name ?: session?.name ?: "BambooKit user", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                         (account?.email ?: session?.email)?.let { Text(it, color = TextSecondary, fontSize = 13.sp) }
+                        dateOnly(stats.stats?.memberSince ?: account?.createdAt)?.let { Text("Member since $it", color = TextMuted, fontSize = 12.sp) }
                         Spacer(Modifier.height(Space.m))
                         val canUpload = account?.cloudStorage == true
                         Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
@@ -215,22 +227,35 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
                             }
                             if (account?.avatarStored == true) OutlinedButton(onClick = { store.removeAvatar() }, enabled = !profile.photoBusy) { Text("Remove photo") }
                         }
-                        if (account != null && !canUpload) Text(
-                            "Cloud storage isn't set up on the server yet, so profile photos can't be changed.",
-                            color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = Space.s),
+                        val photoErr = profile.photoError
+                        if (account != null && !canUpload && photoErr == null) Banner(
+                            "Cloud storage isn't set up on the BambooKit server, so profile photos can't be saved yet. " +
+                                "The server owner has to add the storage settings (R2_ENDPOINT or CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME).",
+                            Icons.Filled.PhotoCamera, color = StatusWarning, tint = StatusWarningTint, title = "Profile photos are off on this server",
+                            modifier = Modifier.padding(top = Space.s),
+                            diagnosis = com.bambookit.android.data.Diagnosis("The server reports cloudStorage = false", "STORAGE_NOT_CONFIGURED", 503, "GET", "/v1/me"),
+                        )
+                        if (photoErr != null) Banner(
+                            if (photoErr.code == "STORAGE_NOT_CONFIGURED") {
+                                "Cloud storage isn't set up on the BambooKit server. " + (photoErr.details["missing"]?.let { "Missing server setting: $it." }
+                                    ?: "The server didn't say which setting is missing; it needs R2_ENDPOINT (or CLOUDFLARE_ACCOUNT_ID), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME.")
+                            } else photoErr.message,
+                            Icons.Filled.PhotoCamera, color = StatusFailed, tint = DangerTint, title = "Couldn't update the photo",
+                            modifier = Modifier.padding(top = Space.s), diagnosis = photoErr,
                         )
                     }
                 }
                 when {
                     account == null && profile.loading -> item { LoadingState("Loading your profile…") }
                     account == null && profile.error != null -> item {
-                        Banner(profile.error ?: "", Icons.Filled.AccountCircle, title = "Couldn't load your profile", actionLabel = "Retry", onAction = { store.loadProfile() }, modifier = Modifier.padding(top = Space.l))
+                        Banner(profile.error ?: "", Icons.Filled.AccountCircle, color = StatusFailed, tint = DangerTint, title = "Couldn't load your profile", actionLabel = "Retry", onAction = { store.loadProfile() }, modifier = Modifier.padding(top = Space.l), diagnosis = profile.errorDiagnosis)
                     }
                 }
                 if (account != null) item {
                     SectionTitle("Nickname")
                     BkCard { NicknameEditor(store, account) }
                 }
+                profileStats(stats, projects, store, onOpenProject)
                 item {
                     SectionTitle("AI providers")
                     AiProvidersSection(store, onOpen = { providersFor = it })
@@ -246,7 +271,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
                 }
                 item {
                     SectionTitle("App updates")
-                    BkCard { UpdateCard(updater) }
+                    UpdateCard(updater, onOpen = { showUpdates = true })
                 }
                 if (account != null) item {
                     SectionTitle("Account")

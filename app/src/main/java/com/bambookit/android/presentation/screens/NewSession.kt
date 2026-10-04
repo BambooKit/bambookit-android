@@ -88,6 +88,12 @@ internal fun NewSessionSheet(store: BambooStore, project: Project, onOpenSession
                 Spacer(Modifier.width(6.dp))
                 Text("$pcName is offline. The session starts if it reconnects within 5 minutes.", color = StatusWarning, fontSize = 12.sp)
             }
+            val missing = store.desktopMissing(project.deviceId, com.bambookit.android.data.DesktopFeature.CreateSession)
+            if (missing != null) {
+                val err = com.bambookit.android.data.ContentError.needsDesktop(missing)
+                DesktopUpdateCard(missing, err.diagnosis, onRetry = null)
+                return@Column
+            }
             OutlinedTextField(
                 value = text, onValueChange = { text = it.take(20_000); if (state is NewSessionState.Failed) store.clearNewSession() },
                 enabled = !busy, minLines = 3, maxLines = 8,
@@ -110,7 +116,8 @@ internal fun NewSessionSheet(store: BambooStore, project: Project, onOpenSession
                 is NewSessionState.Failed -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = Space.s)) {
                     Icon(Icons.Filled.ErrorOutline, null, tint = StatusFailed, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(st.message, color = StatusFailed, fontSize = 12.sp, lineHeight = 16.sp)
+                    Text(st.message, color = StatusFailed, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.weight(1f))
+                    InfoButton(st.diagnosis, onRetry = null, tint = StatusFailed, title = "Couldn't start the session")
                 }
                 else -> Unit
             }

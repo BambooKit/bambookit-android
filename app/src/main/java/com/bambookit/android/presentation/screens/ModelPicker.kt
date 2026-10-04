@@ -105,12 +105,9 @@ internal fun ModelPickerSheet(
         val err = view?.error
         when {
             info == null && (view == null || view.loading) -> LoadingState("Reading the models on $pcName…")
-            info == null && err != null -> ErrorState(
-                errorTitle(err, pcName, "Couldn't read the models"), errorMessage(err, pcName),
-                if (err.desktopOutdated) Icons.Filled.SystemUpdate else if (err.desktopUnavailable) Icons.Filled.CloudOff else Icons.Filled.ErrorOutline,
-                onRetry = { store.loadProviders(deviceId, force = true) }, retrying = view.loading,
-                color = if (err.desktopUnavailable || err.desktopOutdated) StatusWarning else StatusFailed,
-            )
+            info == null && err != null -> Column(Modifier.padding(bottom = Space.xl)) {
+                ContentErrorState(err, pcName, "Couldn't read the models", onRetry = { store.loadProviders(deviceId, force = true) }, retrying = view.loading)
+            }
             info != null -> LazyColumn(contentPadding = PaddingValues(bottom = Space.xl)) {
                 item {
                     PickRow(

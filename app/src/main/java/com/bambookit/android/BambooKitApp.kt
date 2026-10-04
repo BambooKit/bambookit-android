@@ -7,6 +7,7 @@ import com.bambookit.android.data.ApiClient
 import com.bambookit.android.data.AuthRepository
 import com.bambookit.android.data.BambooNotifier
 import com.bambookit.android.data.BambooStore
+import com.bambookit.android.data.BambooClientInterceptor
 import com.bambookit.android.data.DiagramCache
 import com.bambookit.android.data.RealtimeClient
 import com.bambookit.android.data.SecureStore
@@ -40,7 +41,9 @@ class BambooKitApp : Application() {
         val json = Json { ignoreUnknownKeys = true; explicitNulls = false; coerceInputValues = true }
         // Generous timeouts: the hosted API can take 20-50 s to wake from sleep on the free plan.
         // Relay calls (files, diagram) use a longer read timeout in ApiClient.
-        val http = OkHttpClient.Builder().connectTimeout(60, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
+        val http = OkHttpClient.Builder().connectTimeout(60, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS)
+            .addInterceptor(BambooClientInterceptor())
+            .build()
         secure = SecureStore(this)
         lock = AppLock(this, secure)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

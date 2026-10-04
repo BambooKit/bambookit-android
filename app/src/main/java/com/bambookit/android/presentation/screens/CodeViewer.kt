@@ -320,6 +320,7 @@ fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: ()
                     icon = Icons.Filled.ErrorOutline,
                     onRetry = onRetry,
                     color = if (view.error.desktopUnavailable || view.error.desktopOutdated || view.error.timedOut) StatusWarning else StatusFailed,
+                    diagnosis = view.error.diagnosis,
                 )
                 content == null -> Unit
                 else -> CodeContent(view.path, content, searching, onCloseSearch = { searching = false })

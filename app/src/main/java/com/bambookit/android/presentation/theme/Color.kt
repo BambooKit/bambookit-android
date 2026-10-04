@@ -95,3 +95,7 @@ val SyntaxType = Color(0xFF93C9C4)
 val LineNumber = TextMuted
 val SearchMatch = StatusWarning.copy(alpha = 0.28f)
 val SearchMatchCurrent = StatusWarning.copy(alpha = 0.62f)
+
+// Profile statistics, achievements and the "Update BambooKit Desktop" card.
+val AchievementUnlockedBorder = StatusSuccess.copy(alpha = 0.45f)
+val DesktopUpdateBorder = StatusWarning.copy(alpha = 0.5f)

@@ -192,9 +192,10 @@ private fun DetailStatus(a: Approval, view: ApprovalDetailView?, pcName: String,
         }
         err != null -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Space.s)) {
             Text(
-                "${errorTitle(err, pcName, "Couldn't read the full request")}. ${if (err.desktopOutdated) "Update BambooKit Desktop to see the full command and diff here." else "Showing the summary."}",
+                "${errorTitle(err, pcName, "Couldn't read the full request")}. ${err.update?.let { r -> "Installed ${r.currentVersion ?: "unknown"}, needs ${r.requiredVersion} to show the full command and diff. Showing the summary." } ?: if (err.desktopOutdated) "Update BambooKit Desktop to see the full command and diff here." else "Showing the summary."}",
                 color = StatusWarning, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.weight(1f),
             )
+            InfoButton(err.diagnosis, onRetry, tint = StatusWarning, title = "Couldn't read the full request")
             TextButton(onClick = onRetry, enabled = !view.loading) { Text(if (view.loading) "Retrying…" else "Retry", fontSize = 12.sp) }
         }
     }

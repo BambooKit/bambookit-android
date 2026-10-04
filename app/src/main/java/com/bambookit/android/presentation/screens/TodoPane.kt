@@ -92,7 +92,7 @@ internal fun TodoSection(v: TodosView, pcTitle: String, onRetry: () -> Unit) {
             err != null && !v.loaded -> Banner(
                 errorMessage(err, pcTitle), if (err.desktopOutdated) Icons.Filled.SystemUpdate else Icons.Filled.CloudOff,
                 color = StatusWarning, tint = StatusWarningTint, title = errorTitle(err, pcTitle, "Couldn't read the todo list"),
-                actionLabel = "Retry", busy = v.loading, onAction = onRetry,
+                actionLabel = "Retry", busy = v.loading, onAction = onRetry, diagnosis = err.diagnosis,
             )
             !v.loaded -> Text("Reading the todo list from $pcTitle…", color = TextMuted, fontSize = 13.sp)
             else -> Text("The agent has no todo list in this session.", color = TextSecondary, fontSize = 13.sp)

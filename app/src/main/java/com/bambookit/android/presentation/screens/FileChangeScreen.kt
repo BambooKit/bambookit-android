@@ -414,10 +414,11 @@ private fun VersionPane(
             if (err.desktopUnavailable) ErrorState(
                 "Before and After need $pcTitle online",
                 "Full file versions are read live from the PC and never stored. The Diff tab shows the changes saved in the session history.",
-                Icons.Filled.CloudOff, onRetry = onRetry, color = StatusWarning,
+                Icons.Filled.CloudOff, onRetry = onRetry, color = StatusWarning, diagnosis = err.diagnosis,
             ) else ErrorState(
                 errorTitle(err, pcTitle, "Couldn't read this file"), errorMessage(err, pcTitle), Icons.Filled.ErrorOutline, onRetry = onRetry,
                 color = if (err.desktopOutdated || err.timedOut) StatusWarning else StatusFailed,
+                diagnosis = err.diagnosis,
             )
             TextButton(onClick = onShowDiff) { Text("Show diff") }
         }

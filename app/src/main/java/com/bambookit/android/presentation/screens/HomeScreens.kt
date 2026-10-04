@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -97,12 +98,16 @@ fun ConnectionBanner(store: BambooStore) {
                 "Live updates paused — reconnecting automatically.", Icons.Filled.CloudOff, color = StatusFailed, tint = StatusFailedTint,
                 title = "Not connected to BambooKit",
                 actionLabel = "Refresh", onAction = { store.refreshAll() }, modifier = Modifier.padding(bottom = Space.s),
+                diagnosis = com.bambookit.android.data.Diagnosis("The live connection to BambooKit dropped; it reconnects automatically.", "NETWORK", method = "GET", path = "/v1/realtime/stream"),
             )
             desktops.isNotEmpty() && offline.size == desktops.size -> Banner(
                 "Chats are stored on your PC. Open BambooKit Desktop there to see and control sessions.",
                 Icons.Filled.CloudOff, color = StatusFailed, tint = StatusFailedTint,
                 title = if (offline.size == 1) "${offline[0].name} is offline" else "Your PCs are offline",
                 modifier = Modifier.padding(bottom = Space.s),
+                diagnosis = com.bambookit.android.data.Diagnosis(
+                    if (offline.size == 1) "${offline[0].name} is offline" else "Your PCs are offline", "DESKTOP_OFFLINE",
+                ),
             )
         }
     }
@@ -122,7 +127,7 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
         if (o == null) {
             LazyColumn(Modifier.fillMaxSize()) {
                 item {
-                    if (error != null) ErrorState("Couldn't load your overview", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing)
+                    if (error != null) ErrorState("Couldn't load your overview", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing, diagnosis = store.errorDiagnosis.collectAsState().value)
                     else LoadingState("Loading your workspace…")
                 }
             }
@@ -284,7 +289,7 @@ fun SessionCard(
 // ================================================================== projects
 
 @Composable
-fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
+fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusProjectId: String? = null, onFocused: () -> Unit = {}) {
     val projects by store.projects.collectAsState()
     val sessions by store.sessions.collectAsState()
     val devices by store.devices.collectAsState()
@@ -295,9 +300,25 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
     var newIn by rememberSaveable { mutableStateOf<String?>(null) }
     val projectIds = projects.map { it.id }.toSet()
     val orphans = sessions.filter { it.projectId == null || it.projectId !in projectIds }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    // Opened from Profile → Projects managed: scroll to that project and show all of its sessions.
+    LaunchedEffect(focusProjectId, projects.size) {
+        val id = focusProjectId ?: return@LaunchedEffect
+        if (projects.none { it.id == id }) return@LaunchedEffect
+        expanded = expanded + id
+        // Items before it: the intro banner, then per project its header, sessions and "Show all".
+        var index = 1
+        for (p in projects) {
+            if (p.id == id) break
+            val n = sessions.count { it.projectId == p.id }
+            index += 1 + (if (p.id in expanded) n else minOf(n, 3)) + (if (n > 3) 1 else 0)
+        }
+        runCatching { listState.animateScrollToItem(index) }
+        onFocused()
+    }
 
     RefreshBox(refreshing = refreshing, onRefresh = { store.refreshAll() }) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(horizontal = Space.screen)) {
             item {
                 Banner(
                     "Sessions run in BambooKit Desktop on your PC. Start one with New session, open one to follow it live and answer the agent's requests, or tap Continue on PC to chat in an existing one.",
@@ -306,7 +327,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
                 )
             }
             when {
-                !loaded && projects.isEmpty() && error != null -> item { ErrorState("Couldn't load projects", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing) }
+                !loaded && projects.isEmpty() && error != null -> item { ErrorState("Couldn't load projects", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing, diagnosis = store.errorDiagnosis.collectAsState().value) }
                 !loaded && projects.isEmpty() -> item { LoadingState("Loading projects…") }
                 projects.isEmpty() && orphans.isEmpty() -> item {
                     EmptyState("No projects yet", "Open a project in BambooKit Desktop on your PC and it shows up here.", Icons.Filled.Folder)
@@ -388,7 +409,7 @@ fun ApprovalsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
     RefreshBox(refreshing = refreshing, onRefresh = { store.refreshAll() }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
             if (!loaded && approvals.isEmpty() && error != null) item {
-                ErrorState("Couldn't load requests", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing)
+                ErrorState("Couldn't load requests", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing, diagnosis = store.errorDiagnosis.collectAsState().value)
             } else if (!loaded && approvals.isEmpty()) item { LoadingState("Loading requests…") }
             else if (approvals.isEmpty()) item {
                 EmptyState(

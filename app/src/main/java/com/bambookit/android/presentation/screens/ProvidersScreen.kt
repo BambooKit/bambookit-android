@@ -143,24 +143,22 @@ fun ProvidersScreen(store: BambooStore, deviceId: String, onClose: () -> Unit) {
                         "Providers are read live from $pcName. Open BambooKit Desktop there; keys you add now are delivered if it reconnects within 5 minutes.",
                         Icons.Filled.CloudOff, color = StatusWarning, tint = StatusWarningTint, title = "$pcName is offline",
                         modifier = Modifier.padding(top = Space.s),
+                        diagnosis = com.bambookit.android.data.Diagnosis("$pcName is offline", "DESKTOP_OFFLINE", desktopVersion = pc.appVersion),
                     )
                 }
-                if (pc != null && pc.encryptionKey.isNullOrBlank()) item {
+                if (pc != null && pc.encryptionKey.isNullOrBlank() && view?.error?.update == null) item {
                     Banner(
                         "This version of BambooKit Desktop can't receive encrypted keys. Update it on $pcName to add keys from your phone.",
                         Icons.Filled.SystemUpdate, color = StatusWarning, tint = StatusWarningTint, title = "Update BambooKit Desktop",
                         modifier = Modifier.padding(top = Space.s),
+                        diagnosis = store.desktopMissing(pc.id, com.bambookit.android.data.DesktopFeature.ProviderKeys)?.let { com.bambookit.android.data.ContentError.needsDesktop(it).diagnosis }
+                            ?: com.bambookit.android.data.Diagnosis("$pcName has no encryption key on record", "DESKTOP_UPDATE_REQUIRED", desktopVersion = pc.appVersion),
                     )
                 }
                 when {
                     info == null && (view == null || view.loading) -> item { LoadingState("Reading the AI providers on $pcName…") }
                     info == null && err != null -> item {
-                        ErrorState(
-                            errorTitle(err, pcName, "Couldn't read the AI providers"), errorMessage(err, pcName),
-                            if (err.desktopOutdated) Icons.Filled.SystemUpdate else Icons.Filled.CloudOff,
-                            onRetry = { store.loadProviders(deviceId, force = true) }, retrying = view.loading,
-                            color = if (err.desktopUnavailable || err.desktopOutdated) StatusWarning else StatusFailed,
-                        )
+                        ContentErrorState(err, pcName, "Couldn't read the AI providers", onRetry = { store.loadProviders(deviceId, force = true) }, retrying = view.loading)
                     }
                 }
                 if (info != null) {

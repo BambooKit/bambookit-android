@@ -269,14 +269,14 @@ internal fun SummaryPane(
             s?.statusMessage?.takeIf { it.isNotBlank() && s.status == "error" }?.let { msg ->
                 item {
                     Spacer(Modifier.height(Space.m))
-                    Banner(msg, Icons.Filled.ErrorOutline, color = StatusFailed, tint = StatusFailedTint, title = "The session stopped with an error")
+                    Banner(msg, Icons.Filled.ErrorOutline, color = StatusFailed, tint = StatusFailedTint, title = "The session stopped with an error", diagnosis = com.bambookit.android.data.Diagnosis(msg, "SESSION_ERROR"))
                 }
             }
             if (data == null && hv.error != null) item {
                 Spacer(Modifier.height(Space.m))
                 Banner(
-                    hv.error.message, Icons.Filled.CloudOff, color = StatusWarning, tint = StatusWarningTint, title = "History not available",
-                    actionLabel = "Retry", busy = hv.loading, onAction = onRetry,
+                    errorMessage(hv.error, pcTitle), Icons.Filled.CloudOff, color = StatusWarning, tint = StatusWarningTint, title = errorTitle(hv.error, pcTitle, "History not available"),
+                    actionLabel = "Retry", busy = hv.loading, onAction = onRetry, diagnosis = hv.error.diagnosis,
                 )
             } else if (data == null && hv.loading) item { LoadingState("Reading this session from $pcTitle…") }
             if (d.todos.todos.isNotEmpty() || d.todos.error != null || s?.isActive == true) item {

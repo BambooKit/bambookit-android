@@ -11,6 +11,8 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import com.bambookit.android.presentation.screens.AppLockScreen
 import com.bambookit.android.presentation.screens.ProfileButton
 import com.bambookit.android.presentation.screens.LocalAppLocked
+import com.bambookit.android.presentation.screens.LocalDiagHandlers
+import com.bambookit.android.presentation.screens.DiagHandlers
 import com.bambookit.android.presentation.screens.ProfileScreen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -121,7 +123,7 @@ class MainActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         // New releases on GitHub: checked when the app opens, at most every few hours.
-        (application as BambooKitApp).updater.check()
+        (application as BambooKitApp).updater.onResume()
     }
 }
 
@@ -151,7 +153,10 @@ private fun AppShell(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
         }
     }
     val showLock = locked && signedIn
-    CompositionLocalProvider(LocalAppLocked provides showLock) {
+    CompositionLocalProvider(
+        LocalAppLocked provides showLock,
+        LocalDiagHandlers provides DiagHandlers(refresh = { app.store.refreshAll() }, reconnect = { app.store.reconnect() }),
+    ) {
         Box(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize().then(if (showLock) Modifier.clearAndSetSemantics { } else Modifier)) { Root(app, incoming) }
             if (showLock) AppLockScreen(app.lock)
@@ -169,6 +174,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
     var openSession by rememberSaveable { mutableStateOf<String?>(null) }
     var showProfile by rememberSaveable { mutableStateOf(false) }
+    var focusProject by rememberSaveable { mutableStateOf<String?>(null) }
     val profile by store.profile.collectAsState()
     var pairStatus by remember { mutableStateOf<String?>(null) }
     var pendingPairToken by remember { mutableStateOf<String?>(null) }
@@ -249,6 +255,10 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
         }
     }
     LaunchedEffect(Unit) { store.messages.collect { snackbar.showSnackbar(it) } }
+    // An update really replaced the app: say so once.
+    LaunchedEffect(Unit) {
+        app.updater.installed.collect { msg -> if (msg != null) snackbar.showSnackbar(msg) }
+    }
 
     if (session == null) {
         LaunchedEffect(Unit) {
@@ -299,7 +309,10 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             val current = openSession
             if (showProfile) {
-                ProfileScreen(store, app.updater, app.lock, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } })
+                ProfileScreen(
+                    store, app.updater, app.lock, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } },
+                    onOpenProject = { id -> showProfile = false; tab = Tab.Projects; focusProject = id },
+                )
             } else if (current != null) {
                 SessionScreen(store, current, onBack = { openSession = null })
             } else Column(Modifier.fillMaxSize()) {
@@ -312,7 +325,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         Tab.Home -> HomeScreen(store, onOpenSession = { openSession = it }, onPair = ::scan, onApprovals = { tab = Tab.Approvals })
-                        Tab.Projects -> ProjectsScreen(store, onOpenSession = { openSession = it })
+                        Tab.Projects -> ProjectsScreen(store, onOpenSession = { openSession = it }, focusProjectId = focusProject, onFocused = { focusProject = null })
                         Tab.Approvals -> ApprovalsScreen(store, onOpenSession = { openSession = it })
                         Tab.Devices -> DevicesScreen(store, pairStatus, onScan = ::scan, onProfile = { showProfile = true })
                     }

@@ -37,7 +37,7 @@ data class AvatarUpload(
     val expiresIn: Int? = null,
 )
 
-@Serializable data class AvatarSet(val avatarUrl: String? = null)
+@Serializable data class AvatarSet(val avatarUrl: String? = null, val profile: Account? = null)
 
 @Serializable data class LinkedDevice(val id: String, val name: String, val kind: String, val platform: String)
 
@@ -58,6 +58,9 @@ data class Device(
     val activeSession: ActiveSessionRef? = null,
     /** Desktops only: the PC's RSA public key (SPKI PEM) that provider API keys are encrypted to. Null on older desktops. */
     val encryptionKey: String? = null,
+    /** Desktops only (API 1.1.0+): desktop protocol and the capabilities the PC has. Null from older servers. */
+    val protocol: Int? = null,
+    val capabilities: List<String>? = null,
 )
 
 @Serializable
@@ -71,6 +74,8 @@ data class Project(
     val activeSessions: Int = 0,
     val totalSessions: Int = 0,
     val updatedAt: String? = null,
+    /** active, completed or archived (API 1.1.0+). */
+    val status: String? = null,
 )
 
 @Serializable data class ChangeSummary(val additions: Int = 0, val deletions: Int = 0, val files: Int = 0)
@@ -429,3 +434,91 @@ data class ApprovalDetail(
     val context: JsonElement? = null,
     val truncated: Boolean = false,
 )
+
+// ---------------------------------------------------------------- profile statistics (GET /v1/me/stats)
+
+@Serializable
+data class ProjectStat(
+    val id: String,
+    val name: String = "",
+    val status: String = "active",
+    val branch: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+    val lastActivityAt: String? = null,
+    val sessions: Int = 0,
+    val tasks: Int = 0,
+    val filesChanged: Int = 0,
+    val codingMs: Long = 0,
+)
+
+@Serializable
+data class ProjectStats(
+    val total: Int = 0,
+    val active: Int = 0,
+    val completed: Int = 0,
+    val archived: Int = 0,
+    val list: List<ProjectStat> = emptyList(),
+)
+
+@Serializable data class SessionCounts(val total: Int = 0, val withCompletedWork: Int = 0)
+@Serializable data class TaskCounts(val total: Int = 0, val completed: Int = 0, val failed: Int = 0, val debugging: Int = 0)
+
+@Serializable
+data class CodingTime(
+    val totalMs: Long = 0,
+    val thisWeekMs: Long = 0,
+    val thisMonthMs: Long = 0,
+    val nightMs: Long = 0,
+    val longestMs: Long = 0,
+)
+
+@Serializable
+data class CodeStats(
+    val filesCreated: Long = 0,
+    val filesModified: Long = 0,
+    val filesDeleted: Long = 0,
+    val filesRenamed: Long = 0,
+    val linesAdded: Long = 0,
+    val linesDeleted: Long = 0,
+    val edits: Long = 0,
+    val testsRun: Long = 0,
+    val testsPassed: Long = 0,
+    val testsFailed: Long = 0,
+    val commits: Long = 0,
+    val deployments: Long = 0,
+)
+
+@Serializable
+data class Achievement(
+    val id: String,
+    val title: String = "",
+    val description: String = "",
+    val progress: Double = 0.0,
+    val target: Double = 1.0,
+    /** "count" or "ms". */
+    val unit: String = "count",
+    val unlocked: Boolean = false,
+    val unlockedAt: String? = null,
+)
+
+@Serializable
+data class ProfileStats(
+    val timeZone: String? = null,
+    val memberSince: String? = null,
+    val projects: ProjectStats = ProjectStats(),
+    val sessions: SessionCounts = SessionCounts(),
+    val tasks: TaskCounts = TaskCounts(),
+    val codingTime: CodingTime = CodingTime(),
+    val code: CodeStats = CodeStats(),
+    /** Plain-text rules for how coding time, files and night hours are counted. */
+    val rules: Map<String, String> = emptyMap(),
+    val achievements: List<Achievement> = emptyList(),
+)
+
+@Serializable data class ProjectStatusResult(val id: String, val status: String)
+
+@Serializable data class AchievementEvent(val id: String = "", val title: String = "", val unlockedAt: String? = null)
+
+/** GET /v1/meta (public). */
+@Serializable data class ApiMeta(val apiVersion: String? = null, val protocol: Int? = null)

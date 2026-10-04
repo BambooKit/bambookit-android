@@ -152,7 +152,7 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
             when {
                 d == null -> LoadingState("Loading session…")
                 s == null && d.history.data == null && d.error != null && !d.loading && !d.history.loading ->
-                    ErrorState("Couldn't open this session", d.error, Icons.Filled.CloudOff, onRetry = { store.reloadSession() })
+                    ErrorState("Couldn't open this session", d.error, Icons.Filled.CloudOff, onRetry = { store.reloadSession() }, diagnosis = d.errorDiagnosis)
                 else -> when (tab) {
                     SessionTabId.Summary -> SummaryPane(
                         d, pc, pcTitle,
@@ -268,19 +268,13 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
 @Composable
 internal fun ContentUnavailable(err: ContentError, pcTitle: String, retrying: Boolean, onRetry: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        ErrorState(
-            title = errorTitle(err, pcTitle, "Couldn't read this from $pcTitle"),
-            message = errorMessage(err, pcTitle),
-            icon = if (err.desktopUnavailable || err.code == "NETWORK") Icons.Filled.CloudOff else if (err.desktopOutdated) Icons.Filled.SystemUpdate else Icons.Filled.ErrorOutline,
-            onRetry = onRetry,
-            retrying = retrying,
-            color = if (err.desktopUnavailable || err.desktopOutdated || err.timedOut) StatusWarning else StatusFailed,
-        )
+        ContentErrorState(err, pcTitle, "Couldn't read this from $pcTitle", onRetry, retrying)
     }
 }
 
 /** Specific titles for content that could not be read from the PC. */
-internal fun errorTitle(err: ContentError, pcTitle: String, fallback: String): String = when (err.code) {
+internal fun errorTitle(err: ContentError, pcTitle: String, fallback: String): String = if (err.serverOutdated) "The BambooKit server needs an update" else when (err.code) {
+    "DESKTOP_UPDATE_REQUIRED" -> "Update BambooKit Desktop on ${err.update?.device ?: pcTitle}"
     "DESKTOP_OFFLINE" -> "$pcTitle is offline"
     "DESKTOP_TIMEOUT" -> "$pcTitle didn't answer in time"
     "TIMEOUT" -> "This is taking too long"
@@ -290,7 +284,10 @@ internal fun errorTitle(err: ContentError, pcTitle: String, fallback: String): S
     else -> fallback
 }
 
-internal fun errorMessage(err: ContentError, pcTitle: String): String = when (err.code) {
+internal fun errorMessage(err: ContentError, pcTitle: String): String = if (err.serverOutdated) {
+    "The BambooKit server (${com.bambookit.android.data.Diagnostics.apiVersion?.let { "API $it" } ?: "an older API"}) is older than this app and doesn't have this feature yet. It has to be updated; nothing is wrong with your phone or PC."
+} else when (err.code) {
+    "DESKTOP_UPDATE_REQUIRED" -> err.update?.let { r -> "${r.device} has BambooKit Desktop ${r.currentVersion ?: "(unknown version)"}; this needs ${r.requiredVersion} or newer. ${r.reason}".trim() } ?: err.message
     "DESKTOP_OFFLINE" -> "Project files and chats stay on $pcTitle. Open BambooKit Desktop there, then try again."
     "DESKTOP_TIMEOUT" -> "$pcTitle is online but didn't answer in time. Large projects can take up to a minute. Tap Retry."
     "TIMEOUT" -> "No answer from BambooKit in time. Check your connection and tap Retry."
@@ -302,8 +299,8 @@ internal fun errorMessage(err: ContentError, pcTitle: String): String = when (er
 @Composable
 internal fun StaleBanner(err: ContentError, retrying: Boolean, onRetry: () -> Unit) {
     Banner(
-        err.message, Icons.Filled.CloudOff, color = StatusWarning, tint = StatusWarningTint, title = "Showing what was last read from your PC",
-        actionLabel = "Retry", busy = retrying, onAction = onRetry,
+        errorMessage(err, "your PC"), Icons.Filled.CloudOff, color = StatusWarning, tint = StatusWarningTint, title = "Showing what was last read from your PC",
+        actionLabel = "Retry", busy = retrying, onAction = onRetry, diagnosis = err.diagnosis,
         modifier = Modifier.padding(horizontal = Space.m).padding(top = Space.s),
     )
 }

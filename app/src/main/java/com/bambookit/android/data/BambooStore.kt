@@ -31,20 +31,42 @@ data class PendingCommand(val id: String, val type: String, val status: String, 
  * (the PC's BambooKit Desktop does not know this request yet), DESKTOP_ERROR (the PC answered with an error),
  * TIMEOUT (no answer in time), NETWORK, or an API error code.
  */
-data class ContentError(val code: String, val message: String) {
+data class ContentError(
+    val code: String,
+    val message: String,
+    /** Everything the ⓘ sheet shows (method, path, status, request id, versions). */
+    val diagnosis: Diagnosis = Diagnosis(message, code),
+    /** Set when the PC lacks the feature (decided on the phone or reported by the API as 426). */
+    val update: DesktopRequirement? = null,
+) {
     val desktopUnavailable get() = code == "DESKTOP_OFFLINE" || code == "DESKTOP_TIMEOUT"
     val timedOut get() = code == "DESKTOP_TIMEOUT" || code == "TIMEOUT"
-    val desktopOutdated get() = code == "DESKTOP_OUTDATED"
+    val desktopOutdated get() = code == "DESKTOP_OUTDATED" || code == "DESKTOP_UPDATE_REQUIRED"
+    /** The BambooKit server is older than this app and doesn't have the route. */
+    val serverOutdated get() = Diagnostics.isRouteMissing(code, diagnosis.status, diagnosis.message)
+
+    companion object {
+        /** The PC lacks [r]: shown as an "Update BambooKit Desktop" card; no request was sent. */
+        fun needsDesktop(r: DesktopRequirement): ContentError {
+            val msg = "Update BambooKit Desktop on ${r.device} to ${r.requiredVersion} or newer. ${r.reason}".trim()
+            return ContentError("DESKTOP_UPDATE_REQUIRED", msg, Diagnosis(msg, "DESKTOP_UPDATE_REQUIRED", desktop = r, desktopVersion = r.currentVersion), r)
+        }
+    }
 }
 
 /** Maps an API failure to a [ContentError], recognising an older PC that does not know the request kind. */
 fun contentErrorOf(e: Throwable, fallback: String): ContentError {
-    val api = e as? ApiException ?: return ContentError("UNKNOWN", e.message ?: fallback)
+    val api = e as? ApiException ?: return ContentError("UNKNOWN", e.message ?: fallback, Diagnosis(e.message ?: fallback))
     val msg = api.message ?: fallback
+    val diag = api.diagnosis
     if (api.code == "DESKTOP_ERROR" && Regex("unsupported request|unknown (request|kind)|not supported", RegexOption.IGNORE_CASE).containsMatchIn(msg)) {
-        return ContentError("DESKTOP_OUTDATED", "Update BambooKit Desktop on your PC to see this from your phone.")
+        return ContentError("DESKTOP_OUTDATED", "Update BambooKit Desktop on your PC to see this from your phone.", diag.copy(code = "DESKTOP_OUTDATED"))
     }
-    return ContentError(api.code, msg)
+    api.desktopRequirement?.let { return ContentError(api.code, msg, diag, it) }
+    if (api.isRouteMissing) {
+        return ContentError(api.code, "The BambooKit server is older than this app and doesn't have this feature yet. The server needs to be updated.", diag)
+    }
+    return ContentError(api.code, msg, diag)
 }
 
 /**
@@ -67,6 +89,7 @@ data class SessionDetail(
     /** Session metadata (title, status, model) from the API. */
     val loading: Boolean = true,
     val error: String? = null,
+    val errorDiagnosis: Diagnosis? = null,
     /** Chat content read from the PC. */
     val contentLoading: Boolean = true,
     val contentLoaded: Boolean = false,
@@ -106,9 +129,21 @@ data class ProfileView(
     val account: Account? = null,
     val loading: Boolean = false,
     val error: String? = null,
+    val errorDiagnosis: Diagnosis? = null,
+    /** The last photo upload failure (with STORAGE_NOT_CONFIGURED details when the server reported them). */
+    val photoError: Diagnosis? = null,
     val photoBusy: Boolean = false,
     val deleting: Boolean = false,
     val savingName: Boolean = false,
+)
+
+/** GET /v1/me/stats: statistics, projects managed and achievements. */
+data class StatsView(
+    val loading: Boolean = false,
+    val stats: ProfileStats? = null,
+    val error: ContentError? = null,
+    /** Project ids with a status change in flight. */
+    val saving: Set<String> = emptySet(),
 )
 
 data class FileMapView(
@@ -144,7 +179,7 @@ data class ApprovalDetailView(val loading: Boolean = true, val detail: ApprovalD
 sealed interface NewSessionState {
     data object Sending : NewSessionState
     data class Waiting(val projectId: String, val known: Set<String>, val commandId: String, val sentAt: Long, val deviceOnline: Boolean, val model: ModelRef? = null) : NewSessionState
-    data class Failed(val message: String) : NewSessionState
+    data class Failed(val message: String, val diagnosis: Diagnosis = Diagnosis(message)) : NewSessionState
     data class Created(val sessionId: String) : NewSessionState
 }
 
@@ -206,6 +241,11 @@ class BambooStore(
     val versions: StateFlow<VersionsView?> = _versions
     private val _profile = MutableStateFlow(ProfileView())
     val profile: StateFlow<ProfileView> = _profile
+    private val _stats = MutableStateFlow(StatsView())
+    val stats: StateFlow<StatsView> = _stats
+    private val _errorDiagnosis = MutableStateFlow<Diagnosis?>(null)
+    /** Details of the last refresh failure, for the ⓘ sheet. */
+    val errorDiagnosis: StateFlow<Diagnosis?> = _errorDiagnosis
     private val _error = MutableStateFlow<String?>(null)
     /** Last failed full refresh (cleared by the next successful one). */
     val error: StateFlow<String?> = _error
@@ -262,6 +302,15 @@ class BambooStore(
                 .onFailure { report("Could not register this phone", it) }
             realtime.start()
         }
+        scope.launch {
+            // Once per app start: the phone's time zone for "this week" and night-time statistics, and the
+            // server's API version and protocol. Older servers don't know either; that is fine.
+            runCatching { api.setTimeZone(java.time.ZoneId.systemDefault().id) }
+            runCatching { api.meta() }.onSuccess { m ->
+                m.apiVersion?.let { Diagnostics.apiVersion = it }
+                Diagnostics.apiProtocol = m.protocol
+            }
+        }
         loadProfile()
         // Collectors live until sign-out, so signing in again never adds a second set.
         listenJobs = listOf(
@@ -297,6 +346,9 @@ class BambooStore(
         notificationGate.clear()
         diagramCache.clear()
         _profile.value = ProfileView()
+        _stats.value = StatsView()
+        _errorDiagnosis.value = null
+        Diagnostics.clear()
         _myDeviceId.value = null
         _overview.value = null
         _devices.value = emptyList()
@@ -332,14 +384,33 @@ class BambooStore(
             // Request details of requests that are no longer pending are dropped (re-read when shown again).
             _approvalDetails.update { m -> m.filterKeys { id -> _approvals.value.any { it.id == id } } }
             _error.value = null
+            _errorDiagnosis.value = null
             _loaded.value = true
-        }.onFailure { report("Refresh failed", it) }
+        }.onFailure {
+            _errorDiagnosis.value = it.diagnosis()
+            report("Refresh failed", it)
+        }
         _refreshing.value = false
         _detail.value?.let { loadSession(it.sessionId, keep = true) }
         // Providers shown on screen are re-read too (a reconnect may follow a PC update).
         _providers.value.keys.forEach { loadProviders(it, force = true) }
         if (_profile.value.account == null) loadProfile()
     }
+
+    /** Restarts the live connection (refreshing the sign-in) and re-reads everything. */
+    fun reconnect() {
+        if (auth.session.value == null) return
+        scope.launch {
+            runCatching { auth.accessToken(forceRefresh = true) }
+            realtime.stop()
+            realtime.start()
+            refreshAll()
+        }
+    }
+
+    /** What [deviceId]'s PC lacks for [feature], or null when it has it (or isn't known yet). */
+    fun desktopMissing(deviceId: String?, feature: DesktopFeature): DesktopRequirement? =
+        DesktopCapabilities.missing(_devices.value.firstOrNull { it.id == deviceId }, feature)
 
     /** The PC (desktop device) a session lives on, from the devices list. */
     fun desktopOf(session: Session?): Device? = session?.let { s -> _devices.value.firstOrNull { it.id == s.deviceId } }
@@ -498,6 +569,10 @@ class BambooStore(
 
     private suspend fun fetchTodos(id: String) {
         val startedAt = _detail.value?.takeIf { it.sessionId == id }?.todos?.version ?: return
+        desktopMissing(_detail.value?.session?.deviceId, DesktopFeature.Todos)?.let { r ->
+            _detail.update { d -> if (d?.sessionId == id) d.copy(todos = TodoReducer.failed(TodoReducer.loading(d.todos), ContentError.needsDesktop(r))) else d }
+            return
+        }
         _detail.update { d -> if (d?.sessionId == id) d.copy(todos = TodoReducer.loading(d.todos)) else d }
         try {
             val list = api.todos(id).todos
@@ -560,7 +635,7 @@ class BambooStore(
                     continueRequest = d.continueRequest?.takeUnless { session.remote },
                 )
             }
-        }.onFailure { e -> _detail.update { d -> if (d?.sessionId == id) d.copy(loading = false, error = e.message) else d } }
+        }.onFailure { e -> _detail.update { d -> if (d?.sessionId == id) d.copy(loading = false, error = e.message, errorDiagnosis = e.diagnosis()) else d } }
         loadContent(id)
     }
 
@@ -670,6 +745,10 @@ class BambooStore(
         val body = text.trim()
         val cur = _newSession.value
         if (body.isEmpty() || cur == NewSessionState.Sending || cur is NewSessionState.Waiting) return
+        desktopMissing(project.deviceId, DesktopFeature.CreateSession)?.let { r ->
+            _newSession.value = ContentError.needsDesktop(r).let { NewSessionState.Failed(it.message, it.diagnosis) }
+            return
+        }
         _newSession.value = NewSessionState.Sending
         val known = _sessions.value.filter { it.projectId == project.id }.map { it.id }.toSet()
         scope.launch {
@@ -687,7 +766,7 @@ class BambooStore(
                         else NewSessionState.Failed("${pcName(project.deviceId)} didn't start the session within a minute. Make sure BambooKit Desktop is open and up to date, then try again.")
                     }
                 }
-                .onFailure { _newSession.value = NewSessionState.Failed(commandError("Could not start the session", it)) }
+                .onFailure { _newSession.value = NewSessionState.Failed(commandError("Could not start the session", it), it.diagnosis()) }
         }
     }
 
@@ -705,6 +784,10 @@ class BambooStore(
     fun loadProviders(deviceId: String, force: Boolean = false) {
         val cur = _providers.value[deviceId]
         if (!force && cur != null && (cur.loading || (cur.info != null && android.os.SystemClock.elapsedRealtime() - cur.loadedAt < 60_000))) return
+        desktopMissing(deviceId, DesktopFeature.Providers)?.let { r ->
+            _providers.update { it + (deviceId to (cur ?: ProvidersView(deviceId)).copy(loading = false, info = null, error = ContentError.needsDesktop(r))) }
+            return
+        }
         _providers.update { it + (deviceId to (cur ?: ProvidersView(deviceId)).copy(loading = true)) }
         scope.launch {
             try {
@@ -733,7 +816,7 @@ class BambooStore(
      */
     fun setProviderKey(pc: Device, providerId: String, apiKey: CharArray, onDone: (String?) -> Unit) {
         val pem = pc.encryptionKey
-        if (pem.isNullOrBlank()) {
+        if (pem.isNullOrBlank() || DesktopCapabilities.missing(pc, DesktopFeature.ProviderKeys) != null) {
             apiKey.fill('\u0000')
             onDone("Update BambooKit Desktop on ${pc.name} to set provider keys from your phone.")
             return
@@ -793,6 +876,10 @@ class BambooStore(
     fun loadApprovalDetail(id: String, force: Boolean = false) {
         val cur = _approvalDetails.value[id]
         if (!force && cur != null && (cur.loading || cur.detail != null)) return
+        desktopMissing(_approvals.value.firstOrNull { it.id == id }?.deviceId, DesktopFeature.Approval)?.let { r ->
+            _approvalDetails.update { it + (id to ApprovalDetailView(loading = false, error = ContentError.needsDesktop(r))) }
+            return
+        }
         _approvalDetails.update { it + (id to (cur ?: ApprovalDetailView()).copy(loading = true)) }
         scope.launch {
             try {
@@ -861,6 +948,8 @@ class BambooStore(
     }
 
     private fun commandError(prefix: String, e: Throwable): String = when ((e as? ApiException)?.code) {
+        "DESKTOP_UPDATE_REQUIRED" -> (e as ApiException).desktopRequirement?.let { ContentError.needsDesktop(it).message } ?: "$prefix: ${e.message}"
+        "ROUTE_NOT_FOUND", "NOT_FOUND" -> if ((e as ApiException).isRouteMissing) "$prefix: the BambooKit server is older than this app and doesn't support this yet. The server needs to be updated." else "$prefix: ${e.message}"
         "DEVICE_NOT_PAIRED" -> "$prefix: this phone is not paired with that PC. Pair it again from Devices."
         "DEVICE_REVOKED" -> "$prefix: that PC was removed from your account."
         else -> "$prefix: ${e.message}"
@@ -1034,8 +1123,34 @@ class BambooStore(
     fun loadProfile() = scope.launch {
         _profile.update { it.copy(loading = true) }
         runCatching { api.me() }
-            .onSuccess { a -> _profile.update { it.copy(account = a, loading = false, error = null) } }
-            .onFailure { e -> _profile.update { it.copy(loading = false, error = e.message) } }
+            .onSuccess { a -> _profile.update { it.copy(account = mergeAccount(it.account, a), loading = false, error = null, errorDiagnosis = null) } }
+            .onFailure { e -> _profile.update { it.copy(loading = false, error = e.message, errorDiagnosis = e.diagnosis()) } }
+    }
+
+    /** Statistics, projects managed and achievements (GET /v1/me/stats). */
+    fun loadStats() = scope.launch {
+        _stats.update { it.copy(loading = true) }
+        try {
+            val s = api.stats()
+            _stats.update { it.copy(loading = false, stats = s, error = null) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _stats.update { it.copy(loading = false, error = contentErrorOf(e, "Could not load your statistics.")) }
+        }
+    }
+
+    /** Marks a project active, completed or archived (PATCH /v1/projects/:id), then re-reads the statistics. */
+    fun setProjectStatus(projectId: String, status: String) = scope.launch {
+        _stats.update { it.copy(saving = it.saving + projectId) }
+        runCatching { api.setProjectStatus(projectId, status) }
+            .onSuccess { r ->
+                _stats.update { v -> v.copy(stats = v.stats?.withProjectStatus(r.id, r.status)) }
+                _projects.update { list -> list.map { if (it.id == r.id) it.copy(status = r.status) else it } }
+                loadStats()
+            }
+            .onFailure { e -> _messages.tryEmit(commandError("Could not change the project status", e)) }
+        _stats.update { it.copy(saving = it.saving - projectId) }
     }
 
     /** A profile photo, downloaded once per URL (signed URLs are cached by their path, which changes with every new photo). */
@@ -1048,18 +1163,23 @@ class BambooStore(
         return bmp
     }
 
-    /** Uploads a prepared JPEG (at most 2 MB) as the profile photo: signed upload URL, PUT, then attach. */
+    /**
+     * Uploads a prepared JPEG (at most 2 MB) as the profile photo: signed upload URL, PUT, then attach.
+     * [jpeg] is final before the URL is requested: the URL is signed for exactly its size.
+     */
     fun uploadAvatar(jpeg: ByteArray) = scope.launch {
-        _profile.update { it.copy(photoBusy = true) }
+        val bytes = jpeg.copyOf()
+        _profile.update { it.copy(photoBusy = true, photoError = null) }
         runCatching {
-            val slot = api.avatarUpload("image/jpeg", jpeg.size)
-            api.putSigned(slot.url, slot.headers["Content-Type"] ?: "image/jpeg", jpeg, slot.headers)
+            val slot = api.avatarUpload("image/jpeg", bytes.size)
+            api.putSigned(slot.url, slot.headers.entries.firstOrNull { it.key.equals("Content-Type", true) }?.value ?: "image/jpeg", bytes, slot.headers)
             api.setAvatar(slot.key)
         }.onSuccess { res ->
-            _profile.update { p -> p.copy(photoBusy = false, account = p.account?.copy(avatarUrl = res.avatarUrl, avatarStored = true)) }
+            // The photo now comes from the server everywhere (top bar, profile) and after signing in again.
+            _profile.update { p -> p.copy(photoBusy = false, photoError = null, account = res.profile ?: p.account?.copy(avatarUrl = res.avatarUrl, avatarStored = true)) }
             _messages.tryEmit("Profile photo updated")
         }.onFailure { e ->
-            _profile.update { it.copy(photoBusy = false) }
+            _profile.update { it.copy(photoBusy = false, photoError = e.diagnosis()) }
             _messages.tryEmit(profileError("Could not update the photo", e))
         }
     }
@@ -1097,7 +1217,7 @@ class BambooStore(
     }
 
     private fun profileError(prefix: String, e: Throwable): String = when ((e as? ApiException)?.code) {
-        "STORAGE_NOT_CONFIGURED" -> "Cloud storage isn't set up on the server yet"
+        "STORAGE_NOT_CONFIGURED" -> "Cloud storage isn't set up on the BambooKit server yet, so photos can't be saved. Tap ⓘ for details."
         "IMAGE_TOO_LARGE" -> "Profile photos must be 2 MB or smaller"
         "UNSUPPORTED_IMAGE" -> "Profile photos must be JPEG, PNG or WebP"
         else -> "$prefix: ${e.message}"
@@ -1217,8 +1337,23 @@ class BambooStore(
                     }
                 }
                 "project.updated" -> {
-                    val p = json.decodeFromJsonElement<Project>(event.payload)
-                    _projects.update { list -> (listOf(p) + list.filterNot { it.id == p.id }) }
+                    val p = runCatching { json.decodeFromJsonElement<Project>(event.payload) }.getOrNull()
+                    if (p != null) _projects.update { list -> (listOf(p) + list.filterNot { it.id == p.id }) }
+                    else {
+                        // A status change ({ id, status }) from PATCH /v1/projects/:id on this or another device.
+                        val o = event.payload
+                        val id = o.str("id")
+                        val status = o.str("status")
+                        if (id != null && status != null) {
+                            _projects.update { list -> list.map { if (it.id == id) it.copy(status = status) else it } }
+                            _stats.update { v -> v.copy(stats = v.stats?.withProjectStatus(id, status)) }
+                        }
+                    }
+                }
+                "achievement.unlocked" -> {
+                    val a = runCatching { json.decodeFromJsonElement<AchievementEvent>(event.payload) }.getOrNull()
+                    a?.title?.takeIf { it.isNotBlank() }?.let { _messages.tryEmit("Achievement unlocked: $it") }
+                    if (_stats.value.stats != null || _stats.value.loading) loadStats()
                 }
                 "device.status", "device.registered", "device.updated", "device.revoked", "device.unlinked", "pairing.completed" -> scope.launch {
                     // Off the event collector: a slow request must never hold up (and drop) later events.
@@ -1255,6 +1390,7 @@ class BambooStore(
                 "profile.updated" -> {
                     val a = json.decodeFromJsonElement<Account>(event.payload)
                     _profile.update { it.copy(account = mergeAccount(it.account, a)) }
+                    if (_stats.value.stats != null) loadStats()
                 }
             }
         } catch (e: CancellationException) {
@@ -1333,3 +1469,17 @@ private data class DiffPayload(val files: List<ChangedFile> = emptyList())
 
 @kotlinx.serialization.Serializable
 private data class CommandUpdate(val id: String, val type: String, val status: String, val error: String? = null)
+
+/** The statistics with one project's status changed (counts follow). */
+fun ProfileStats.withProjectStatus(id: String, status: String): ProfileStats {
+    if (projects.list.none { it.id == id }) return this
+    val list = projects.list.map { if (it.id == id) it.copy(status = status) else it }
+    return copy(
+        projects = projects.copy(
+            list = list,
+            active = list.count { it.status == "active" },
+            completed = list.count { it.status == "completed" },
+            archived = list.count { it.status == "archived" },
+        ),
+    )
+}

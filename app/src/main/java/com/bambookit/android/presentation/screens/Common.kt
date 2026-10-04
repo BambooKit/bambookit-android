@@ -227,6 +227,8 @@ fun Banner(
     busy: Boolean = false,
     onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    /** Set on error banners: adds the ⓘ button with what happened, why and the technical details. */
+    diagnosis: com.bambookit.android.data.Diagnosis? = null,
 ) {
     Row(
         modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(tint).padding(horizontal = 12.dp, vertical = 10.dp),
@@ -238,6 +240,7 @@ fun Banner(
             title?.let { Text(it, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
             Text(text, color = if (title != null) TextSecondary else color, fontSize = 12.sp, lineHeight = 16.sp)
         }
+        if (diagnosis != null) InfoButton(diagnosis, onAction, tint = color, title = title)
         if (busy) {
             Spacer(Modifier.width(8.dp))
             CircularProgressIndicator(Modifier.size(16.dp), color = color, strokeWidth = 2.dp)
@@ -297,6 +300,8 @@ fun ErrorState(
     retrying: Boolean = false,
     color: Color = StatusFailed,
     modifier: Modifier = Modifier,
+    /** What the ⓘ sheet shows; built from [message] when the failure carries no request details. */
+    diagnosis: com.bambookit.android.data.Diagnosis? = null,
 ) {
     Column(
         modifier.fillMaxWidth().padding(horizontal = Space.xl, vertical = 36.dp),
@@ -307,15 +312,19 @@ fun ErrorState(
         Text(title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
         Spacer(Modifier.height(4.dp))
         Text(message, color = TextSecondary, fontSize = 13.sp, textAlign = TextAlign.Center, lineHeight = 18.sp)
-        if (onRetry != null) {
-            Spacer(Modifier.height(14.dp))
-            OutlinedButton(onClick = onRetry, enabled = !retrying) {
-                if (retrying) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Retrying…")
-                } else Text("Retry")
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onRetry != null) {
+                OutlinedButton(onClick = onRetry, enabled = !retrying) {
+                    if (retrying) {
+                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Retrying…")
+                    } else Text("Retry")
+                }
+                Spacer(Modifier.width(4.dp))
             }
+            InfoButton(diagnosis ?: com.bambookit.android.data.Diagnosis(message), onRetry, title = title)
         }
     }
 }

@@ -24,10 +24,38 @@ import java.util.concurrent.TimeUnit
 /**
  * An API error. [code] is the API's machine-readable error code (e.g. DESKTOP_OFFLINE,
  * DESKTOP_TIMEOUT), "NETWORK" when the API could not be reached, or HTTP_<status>.
+ * The other fields feed the ⓘ diagnostics; none of them ever holds a token or a signed URL.
  */
-class ApiException(message: String, val status: Int, val code: String) : Exception(message) {
+class ApiException(
+    message: String,
+    val status: Int,
+    val code: String,
+    val method: String? = null,
+    val path: String? = null,
+    val requestId: String? = null,
+    val apiVersion: String? = null,
+    val details: JsonElement? = null,
+) : Exception(message) {
     /** The PC that holds the data is offline or did not answer the relay in time. */
     val isDesktopUnavailable get() = code == "DESKTOP_OFFLINE" || code == "DESKTOP_TIMEOUT"
+    /** The server is older than this app and doesn't have the route. */
+    val isRouteMissing get() = Diagnostics.isRouteMissing(code, status, message)
+    val desktopRequirement: DesktopRequirement?
+        get() = if (code == "DESKTOP_UPDATE_REQUIRED") DesktopRequirement.fromDetails(details as? JsonObject) else null
+
+    val diagnosis: Diagnosis
+        get() = Diagnosis(
+            message = message ?: "Request failed",
+            code = code,
+            status = status,
+            method = method,
+            path = path,
+            requestId = requestId,
+            apiVersion = apiVersion,
+            protocol = ((details as? JsonObject)?.get("protocol") as? JsonPrimitive)?.contentOrNull?.toIntOrNull(),
+            desktop = desktopRequirement,
+            details = Diagnostics.flatDetails(details),
+        )
 }
 
 /**
@@ -58,33 +86,29 @@ class ApiClient(
     /** Returns the response body, or null if the token was rejected and a refresh should be tried. */
     private suspend fun execute(client: OkHttpClient, method: String, path: String, body: JsonElement?, refreshed: Boolean): String? {
         val attempt = if (refreshed) 1 else 0
-        run {
-            val token = auth.accessToken(forceRefresh = attempt > 0)
-            val builder = Request.Builder().url("${Config.apiUrl}$path").header("Authorization", "Bearer $token")
-            store.deviceId?.let { builder.header("X-BK-Device-Id", it) }
-            val requestBody = body?.toString()?.toRequestBody("application/json".toMediaType())
-            builder.method(method, requestBody ?: if (method == "POST" || method == "PATCH") "{}".toRequestBody("application/json".toMediaType()) else null)
-            val response = try {
-                client.newCall(builder.build()).execute()
-            } catch (e: java.io.InterruptedIOException) {
-                // OkHttp read/call timeout: the API (or the PC behind it) took too long.
-                throw ApiException("BambooKit took too long to answer. Try again.", 0, "TIMEOUT")
-            } catch (e: Exception) {
-                throw ApiException(unreachableMessage(), 0, "NETWORK")
-            }
-            return response.use {
-                val text = it.body?.string().orEmpty()
-                if (it.code == 401 && attempt == 0) return@use null
-                if (!it.isSuccessful) {
-                    val err = runCatching { json.parseToJsonElement(text).jsonObject["error"]?.jsonObject }.getOrNull()
-                    throw ApiException(
-                        err?.get("message")?.jsonPrimitive?.contentOrNull ?: "Request failed (${it.code})",
-                        it.code,
-                        err?.get("code")?.jsonPrimitive?.contentOrNull ?: "HTTP_${it.code}",
-                    )
-                }
-                text
-            }
+        val safePath = Diagnostics.safePath(path)
+        fun fail(e: ApiException): Nothing {
+            Diagnostics.record(e.diagnosis)
+            throw e
+        }
+        val token = auth.accessToken(forceRefresh = attempt > 0)
+        val builder = Request.Builder().url("${Config.apiUrl}$path").header("Authorization", "Bearer $token")
+        store.deviceId?.let { builder.header("X-BK-Device-Id", it) }
+        val requestBody = body?.toString()?.toRequestBody("application/json".toMediaType())
+        builder.method(method, requestBody ?: if (method == "POST" || method == "PATCH") "{}".toRequestBody("application/json".toMediaType()) else null)
+        val response = try {
+            client.newCall(builder.build()).execute()
+        } catch (e: java.io.InterruptedIOException) {
+            // OkHttp read/call timeout: the API (or the PC behind it) took too long.
+            fail(ApiException("BambooKit took too long to answer. Try again.", 0, "TIMEOUT", method, safePath))
+        } catch (e: Exception) {
+            fail(ApiException(unreachableMessage(), 0, "NETWORK", method, safePath))
+        }
+        return response.use {
+            val text = it.body?.string().orEmpty()
+            if (it.code == 401 && attempt == 0) return@use null
+            if (!it.isSuccessful) fail(errorFrom(json, method, safePath, it.code, text, it.header("X-Request-Id"), it.header(API_VERSION_HEADER)))
+            text
         }
     }
 
@@ -96,6 +120,17 @@ class ApiClient(
         call("POST", path, body, Envelope.serializer(kotlinx.serialization.serializer<T>())).data
 
     suspend fun me(): Account = get("/v1/me")
+    /** Public service information (API 1.1.0+). */
+    suspend fun meta(): ApiMeta = get("/v1/meta")
+    /** Profile statistics, projects managed and achievements (API 1.1.0+). */
+    suspend fun stats(): ProfileStats = get("/v1/me/stats")
+    suspend fun achievements(): List<Achievement> = get("/v1/me/achievements")
+    suspend fun setProjectStatus(id: String, status: String): ProjectStatusResult =
+        call("PATCH", "/v1/projects/$id", buildJsonObject { put("status", status) }, Envelope.serializer(ProjectStatusResult.serializer())).data
+    /** The phone's IANA time zone, for "this week" and night-time statistics. */
+    suspend fun setTimeZone(zone: String) {
+        call("PATCH", "/v1/me", buildJsonObject { put("timeZone", zone) }, JsonObject.serializer())
+    }
     suspend fun overview(): Overview = get("/v1/overview")
     suspend fun devices(): List<Device> = get("/v1/devices")
     suspend fun projects(): List<Project> = get("/v1/projects")
@@ -219,18 +254,29 @@ class ApiClient(
 
     /**
      * Uploads bytes to a signed storage URL. No BambooKit auth header is sent; Content-Type and
-     * Content-Length must match what the URL was signed for.
+     * Content-Length must match what the URL was signed for (see [signedPutRequest]).
+     * Only the status is ever recorded: the URL carries a signature.
      */
     suspend fun putSigned(url: String, contentType: String, bytes: ByteArray, headers: Map<String, String> = emptyMap()) = withContext(Dispatchers.IO) {
-        val builder = Request.Builder().url(url)
-        headers.forEach { (k, v) -> if (!k.equals("Content-Type", true) && !k.equals("Content-Length", true)) builder.header(k, v) }
-        val request = builder.put(bytes.toRequestBody(contentType.toMediaType())).build()
+        val request = signedPutRequest(url, contentType, bytes, headers)
         val response = try {
             http.newCall(request).execute()
         } catch (e: Exception) {
-            throw ApiException("Could not upload the photo: ${e.message}", 0, "NETWORK")
+            val ex = ApiException("Could not upload the photo. Check your connection and try again.", 0, "NETWORK", "PUT", "storage upload")
+            Diagnostics.record(ex.diagnosis)
+            throw ex
         }
-        response.use { if (!it.isSuccessful) throw ApiException("Photo upload failed (${it.code})", it.code, "UPLOAD_FAILED") }
+        response.use {
+            if (!it.isSuccessful) {
+                val ex = ApiException(
+                    if (it.code == 403) "Cloud storage rejected the photo (403). The upload link didn't match the photo's size or type, or it expired."
+                    else "Photo upload failed (${it.code})",
+                    it.code, "UPLOAD_FAILED", "PUT", "storage upload",
+                )
+                Diagnostics.record(ex.diagnosis)
+                throw ex
+            }
+        }
     }
 
     /** Downloads a public or pre-signed image URL (profile photos). No BambooKit auth header is sent. */
@@ -244,6 +290,45 @@ class ApiClient(
     }
 
     companion object {
+        const val API_VERSION_HEADER = "X-BambooKit-API"
+
+        /**
+         * The PUT for a signed storage URL. The URL signs host and content-length, so the body is the exact final
+         * bytes with a fixed length (OkHttp then sends Content-Length, never chunked transfer encoding) and the
+         * Content-Type is exactly the signed one, without a charset.
+         */
+        fun signedPutRequest(url: String, contentType: String, bytes: ByteArray, headers: Map<String, String> = emptyMap()): Request {
+            val type = headers.entries.firstOrNull { it.key.equals("Content-Type", true) }?.value ?: contentType
+            val media = type.toMediaType()
+            val body = object : okhttp3.RequestBody() {
+                override fun contentType() = media
+                override fun contentLength() = bytes.size.toLong()
+                override fun writeTo(sink: okio.BufferedSink) {
+                    sink.write(bytes)
+                }
+            }
+            val builder = Request.Builder().url(url)
+            headers.forEach { (k, v) ->
+                if (!k.equals("Content-Type", true) && !k.equals("Content-Length", true) && !k.equals("Transfer-Encoding", true)) builder.header(k, v)
+            }
+            return builder.header("Content-Type", type).put(body).build()
+        }
+
+        /** An [ApiException] from an error response: `{ error: { code, message, details? }, requestId }`. */
+        fun errorFrom(json: Json, method: String, path: String, status: Int, text: String, requestIdHeader: String?, apiVersion: String?): ApiException {
+            val root = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+            val err = root?.get("error") as? JsonObject
+            return ApiException(
+                (err?.get("message") as? JsonPrimitive)?.contentOrNull ?: "Request failed ($status)",
+                status,
+                (err?.get("code") as? JsonPrimitive)?.contentOrNull ?: "HTTP_$status",
+                method, path,
+                (root?.get("requestId") as? JsonPrimitive)?.contentOrNull ?: requestIdHeader,
+                apiVersion,
+                err?.get("details"),
+            )
+        }
+
         /** Body of SEND_MESSAGE and of a new session: {text, model?: {providerID, modelID}, agent?}. */
         fun messagePayload(text: String, model: ModelRef?, agent: String? = null): JsonObject = buildJsonObject {
             put("text", text)
