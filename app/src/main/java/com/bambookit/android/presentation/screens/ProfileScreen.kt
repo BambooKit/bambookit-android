@@ -158,7 +158,27 @@ private fun providerLabel(provider: String?): String = when (provider) {
     else -> "Other"
 }
 
-/** The signed-in user's profile: photo, account facts, sign out and account deletion. */
+/** Sections of the Profile screen, top to bottom. */
+enum class ProfileSection { Header, Statistics, Notifications, AppLock, AppUpdates, AiProviders, Account, SignOut, DangerZone, ProjectsManaged }
+
+/**
+ * Profile header (photo, nickname, email) first, then statistics and achievements, then the settings and account
+ * actions. Projects managed (counts and the project list) are at the bottom.
+ */
+val PROFILE_SECTIONS: List<ProfileSection> = listOf(
+    ProfileSection.Header,
+    ProfileSection.Statistics,
+    ProfileSection.Notifications,
+    ProfileSection.AppLock,
+    ProfileSection.AppUpdates,
+    ProfileSection.AiProviders,
+    ProfileSection.Account,
+    ProfileSection.SignOut,
+    ProfileSection.DangerZone,
+    ProfileSection.ProjectsManaged,
+)
+
+/** The signed-in user's profile: photo, statistics, settings, account actions and projects managed. */
 @Composable
 fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onBack: () -> Unit, onSignOut: () -> Unit, onOpenProject: (String) -> Unit = {}) {
     val profile by store.profile.collectAsState()
@@ -202,135 +222,159 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
         )
         RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats() }) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
-                item {
-                    Column(Modifier.fillMaxWidth().padding(top = Space.m), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Avatar(store, account?.avatarUrl, account?.name ?: account?.email ?: session?.email, 104.dp)
-                            if (profile.photoBusy || preparing) Box(Modifier.size(104.dp).clip(CircleShape).background(LockScrim.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                // Order: who you are, what you did, settings, account actions; projects managed last.
+                for (section in PROFILE_SECTIONS) when (section) {
+                    ProfileSection.Header -> {
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(top = Space.m), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Avatar(store, account?.avatarUrl, account?.name ?: account?.email ?: session?.email, 104.dp)
+                                    if (profile.photoBusy || preparing) Box(Modifier.size(104.dp).clip(CircleShape).background(LockScrim.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                                    }
+                                }
+                                Spacer(Modifier.height(Space.m))
+                                Text(account?.name ?: session?.name ?: "BambooKit user", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                                (account?.email ?: session?.email)?.let { Text(it, color = TextSecondary, fontSize = 13.sp) }
+                                dateOnly(stats.stats?.memberSince ?: account?.createdAt)?.let { Text("Member since $it", color = TextMuted, fontSize = 12.sp) }
+                                Spacer(Modifier.height(Space.m))
+                                val canUpload = account?.cloudStorage == true
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                                    Button(
+                                        onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                                        enabled = canUpload && !profile.photoBusy && !preparing,
+                                    ) {
+                                        Icon(Icons.Filled.PhotoCamera, null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(Space.s))
+                                        Text("Change photo")
+                                    }
+                                    if (account?.avatarStored == true) OutlinedButton(onClick = { store.removeAvatar() }, enabled = !profile.photoBusy) { Text("Remove photo") }
+                                }
+                                val photoErr = profile.photoError
+                                if (account != null && !canUpload && photoErr == null) Banner(
+                                    "Cloud storage isn't set up on the BambooKit server, so profile photos can't be saved yet. " +
+                                        "The server owner has to add the storage settings (R2_ENDPOINT or CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME).",
+                                    Icons.Filled.PhotoCamera, color = StatusWarning, tint = StatusWarningTint, title = "Profile photos are off on this server",
+                                    modifier = Modifier.padding(top = Space.s),
+                                    diagnosis = com.bambookit.android.data.Diagnosis("The server reports cloudStorage = false", "STORAGE_NOT_CONFIGURED", 503, "GET", "/v1/me"),
+                                )
+                                if (photoErr != null) Banner(
+                                    if (photoErr.code == "STORAGE_NOT_CONFIGURED") {
+                                        "Cloud storage isn't set up on the BambooKit server. " + (photoErr.details["missing"]?.let { "Missing server setting: $it." }
+                                            ?: "The server didn't say which setting is missing; it needs R2_ENDPOINT (or CLOUDFLARE_ACCOUNT_ID), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME.")
+                                    } else photoErr.message,
+                                    Icons.Filled.PhotoCamera, color = StatusFailed, tint = DangerTint, title = "Couldn't update the photo",
+                                    modifier = Modifier.padding(top = Space.s), diagnosis = photoErr,
+                                )
                             }
                         }
-                        Spacer(Modifier.height(Space.m))
-                        Text(account?.name ?: session?.name ?: "BambooKit user", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-                        (account?.email ?: session?.email)?.let { Text(it, color = TextSecondary, fontSize = 13.sp) }
-                        dateOnly(stats.stats?.memberSince ?: account?.createdAt)?.let { Text("Member since $it", color = TextMuted, fontSize = 12.sp) }
-                        Spacer(Modifier.height(Space.m))
-                        val canUpload = account?.cloudStorage == true
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-                            Button(
-                                onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                                enabled = canUpload && !profile.photoBusy && !preparing,
+                        when {
+                            account == null && profile.loading -> item { LoadingState("Loading your profile…") }
+                            account == null && profile.error != null -> item {
+                                Banner(profile.error ?: "", Icons.Filled.AccountCircle, color = StatusFailed, tint = DangerTint, title = "Couldn't load your profile", actionLabel = "Retry", onAction = { store.loadProfile() }, modifier = Modifier.padding(top = Space.l), diagnosis = profile.errorDiagnosis)
+                            }
+                        }
+                        if (account != null) item {
+                            SectionTitle("Nickname")
+                            BkCard { NicknameEditor(store, account) }
+                        }
+                    }
+                    ProfileSection.Statistics -> {
+                        profileStats(stats, store)
+                    }
+                    ProfileSection.Notifications -> {
+                        // Settings live here only (not on the Devices tab): notifications, App lock and updates.
+                        item {
+                            SectionTitle("Notifications")
+                            NotificationSettings()
+                        }
+                    }
+                    ProfileSection.AppLock -> {
+                        item {
+                            SectionTitle("App lock")
+                            AppLockSetting(appLock)
+                        }
+                    }
+                    ProfileSection.AppUpdates -> {
+                        item {
+                            SectionTitle("App updates")
+                            UpdateCard(updater, onOpen = { showUpdates = true })
+                        }
+                    }
+                    ProfileSection.AiProviders -> {
+                        item {
+                            SectionTitle("AI providers")
+                            AiProvidersSection(store, onOpen = { providersFor = it })
+                        }
+                    }
+                    ProfileSection.Account -> {
+                        if (account != null) item {
+                            SectionTitle("Account")
+                            BkCard {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Fact("Sign-in method", providerLabel(account.provider))
+                                    when (account.emailVerified) {
+                                        true -> Fact("Email", "Email verified", StatusSuccess)
+                                        false -> Fact("Email", "Email verification required", StatusWarning)
+                                        null -> Fact("Email", "Unknown", TextMuted)
+                                    }
+                                    dateOnly(account.createdAt)?.let { Fact("Member since", it) }
+                                    account.lastActiveAt?.let { a -> (relative(a).ifBlank { null } ?: dateTime(a))?.let { Fact("Last active", it) } }
+                                    account.devices?.let { Fact("Devices", it.toString()) }
+                                    account.projects?.let { Fact("Projects", it.toString()) }
+                                }
+                            }
+                        }
+                    }
+                    ProfileSection.SignOut -> {
+                        item {
+                            Spacer(Modifier.height(Space.l))
+                            OutlinedButton(
+                                onClick = { confirmSignOut = true }, modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusFailed),
                             ) {
-                                Icon(Icons.Filled.PhotoCamera, null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.AutoMirrored.Filled.Logout, null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(Space.s))
-                                Text("Change photo")
+                                Text("Sign out")
                             }
-                            if (account?.avatarStored == true) OutlinedButton(onClick = { store.removeAvatar() }, enabled = !profile.photoBusy) { Text("Remove photo") }
-                        }
-                        val photoErr = profile.photoError
-                        if (account != null && !canUpload && photoErr == null) Banner(
-                            "Cloud storage isn't set up on the BambooKit server, so profile photos can't be saved yet. " +
-                                "The server owner has to add the storage settings (R2_ENDPOINT or CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME).",
-                            Icons.Filled.PhotoCamera, color = StatusWarning, tint = StatusWarningTint, title = "Profile photos are off on this server",
-                            modifier = Modifier.padding(top = Space.s),
-                            diagnosis = com.bambookit.android.data.Diagnosis("The server reports cloudStorage = false", "STORAGE_NOT_CONFIGURED", 503, "GET", "/v1/me"),
-                        )
-                        if (photoErr != null) Banner(
-                            if (photoErr.code == "STORAGE_NOT_CONFIGURED") {
-                                "Cloud storage isn't set up on the BambooKit server. " + (photoErr.details["missing"]?.let { "Missing server setting: $it." }
-                                    ?: "The server didn't say which setting is missing; it needs R2_ENDPOINT (or CLOUDFLARE_ACCOUNT_ID), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME.")
-                            } else photoErr.message,
-                            Icons.Filled.PhotoCamera, color = StatusFailed, tint = DangerTint, title = "Couldn't update the photo",
-                            modifier = Modifier.padding(top = Space.s), diagnosis = photoErr,
-                        )
-                    }
-                }
-                when {
-                    account == null && profile.loading -> item { LoadingState("Loading your profile…") }
-                    account == null && profile.error != null -> item {
-                        Banner(profile.error ?: "", Icons.Filled.AccountCircle, color = StatusFailed, tint = DangerTint, title = "Couldn't load your profile", actionLabel = "Retry", onAction = { store.loadProfile() }, modifier = Modifier.padding(top = Space.l), diagnosis = profile.errorDiagnosis)
-                    }
-                }
-                if (account != null) item {
-                    SectionTitle("Nickname")
-                    BkCard { NicknameEditor(store, account) }
-                }
-                profileStats(stats, projects, store, onOpenProject)
-                item {
-                    SectionTitle("AI providers")
-                    AiProvidersSection(store, onOpen = { providersFor = it })
-                }
-                // Settings live here only (not on the Devices tab): notifications, App lock and updates.
-                item {
-                    SectionTitle("Notifications")
-                    NotificationSettings()
-                }
-                item {
-                    SectionTitle("App lock")
-                    AppLockSetting(appLock)
-                }
-                item {
-                    SectionTitle("App updates")
-                    UpdateCard(updater, onOpen = { showUpdates = true })
-                }
-                if (account != null) item {
-                    SectionTitle("Account")
-                    BkCard {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Fact("Sign-in method", providerLabel(account.provider))
-                            when (account.emailVerified) {
-                                true -> Fact("Email", "Email verified", StatusSuccess)
-                                false -> Fact("Email", "Email verification required", StatusWarning)
-                                null -> Fact("Email", "Unknown", TextMuted)
-                            }
-                            dateOnly(account.createdAt)?.let { Fact("Member since", it) }
-                            account.lastActiveAt?.let { a -> (relative(a).ifBlank { null } ?: dateTime(a))?.let { Fact("Last active", it) } }
-                            account.devices?.let { Fact("Devices", it.toString()) }
-                            account.projects?.let { Fact("Projects", it.toString()) }
-                        }
-                    }
-                }
-                item {
-                    Spacer(Modifier.height(Space.l))
-                    OutlinedButton(
-                        onClick = { confirmSignOut = true }, modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusFailed),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(Space.s))
-                        Text("Sign out")
-                    }
-                    Text(
-                        "Signing out only removes your sign-in from this phone. Nothing is deleted.",
-                        color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(top = Space.xs),
-                    )
-                }
-                if (account != null) item {
-                    SectionTitle("Danger zone")
-                    BkCard(border = StatusFailed.copy(alpha = 0.45f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconTile(Icons.Filled.DeleteForever, tint = StatusFailed, background = DangerTint)
-                            Spacer(Modifier.width(Space.m))
-                            Text("Delete account", color = StatusFailed, fontWeight = FontWeight.SemiBold)
-                        }
-                        Spacer(Modifier.height(Space.s))
-                        Text(
-                            "Permanently deletes your BambooKit account, devices and pairings, approvals, the session index, shared links, " +
-                                "saved session copies and your profile photo. Files and sessions on your PCs are not touched.",
-                            color = TextSecondary, fontSize = 13.sp, lineHeight = 18.sp,
-                        )
-                        Spacer(Modifier.height(Space.m))
-                        if (account.accountDeletion) {
-                            Button(
-                                onClick = { deleting = true }, modifier = Modifier.fillMaxWidth(), enabled = !profile.deleting,
-                                colors = ButtonDefaults.buttonColors(containerColor = StatusFailed, contentColor = LockScrim),
-                            ) { Text("Delete account…") }
-                        } else {
                             Text(
-                                "Account deletion isn't set up on the server yet. Ask the BambooKit administrator, or try again later.",
-                                color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp,
+                                "Signing out only removes your sign-in from this phone. Nothing is deleted.",
+                                color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(top = Space.xs),
                             )
                         }
+                    }
+                    ProfileSection.DangerZone -> {
+                        if (account != null) item {
+                            SectionTitle("Danger zone")
+                            BkCard(border = StatusFailed.copy(alpha = 0.45f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconTile(Icons.Filled.DeleteForever, tint = StatusFailed, background = DangerTint)
+                                    Spacer(Modifier.width(Space.m))
+                                    Text("Delete account", color = StatusFailed, fontWeight = FontWeight.SemiBold)
+                                }
+                                Spacer(Modifier.height(Space.s))
+                                Text(
+                                    "Permanently deletes your BambooKit account, devices and pairings, approvals, the session index, shared links, " +
+                                        "saved session copies and your profile photo. Files and sessions on your PCs are not touched.",
+                                    color = TextSecondary, fontSize = 13.sp, lineHeight = 18.sp,
+                                )
+                                Spacer(Modifier.height(Space.m))
+                                if (account.accountDeletion) {
+                                    Button(
+                                        onClick = { deleting = true }, modifier = Modifier.fillMaxWidth(), enabled = !profile.deleting,
+                                        colors = ButtonDefaults.buttonColors(containerColor = StatusFailed, contentColor = LockScrim),
+                                    ) { Text("Delete account…") }
+                                } else {
+                                    Text(
+                                        "Account deletion isn't set up on the server yet. Ask the BambooKit administrator, or try again later.",
+                                        color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    ProfileSection.ProjectsManaged -> {
+                        profileProjects(stats, projects, store, onOpenProject)
                     }
                 }
                 item { BottomSpacer() }

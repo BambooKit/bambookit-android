@@ -78,11 +78,11 @@ private fun projectStatusColors(s: String): Pair<Color, Color> = when (s) {
 private fun recent(iso: String?): Boolean = runCatching { Duration.between(Instant.parse(iso), Instant.now()).toDays() < 7 }.getOrDefault(false)
 
 /**
- * Statistics, projects managed, coding time, code, tasks and achievements on the Profile screen — real
- * numbers from GET /v1/me/stats only (0 when there is nothing yet). With a server older than API 1.1.0 the
- * statistics can't be read; the projects known from the project list are still shown.
+ * Statistics (coding time, code, tasks) and achievements on the Profile screen — real numbers from
+ * GET /v1/me/stats only (0 when there is nothing yet). Projects managed are shown separately, at the bottom
+ * of the screen ([profileProjects]).
  */
-fun LazyListScope.profileStats(view: StatsView, projects: List<Project>, store: BambooStore, onOpenProject: (String) -> Unit) {
+fun LazyListScope.profileStats(view: StatsView, store: BambooStore) {
     val st = view.stats
     val err = view.error
     if (st == null) {
@@ -100,57 +100,11 @@ fun LazyListScope.profileStats(view: StatsView, projects: List<Project>, store: 
             }
             else -> item { LoadingState("Loading your statistics…") }
         }
-        if (projects.isNotEmpty()) {
-            item {
-                SectionTitle("Projects managed")
-                BkCard {
-                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-                        Num("Total", projects.size.toLong(), Modifier.weight(1f))
-                        Num("Recently updated", projects.count { recent(it.updatedAt) }.toLong(), Modifier.weight(1f))
-                    }
-                    Text("Status, coding time and per-project totals need the updated server.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = Space.s))
-                }
-            }
-            items(projects.sortedByDescending { it.updatedAt }, key = { "pf:" + it.id }) { p ->
-                Spacer(Modifier.height(Space.s))
-                BkCard(onClick = { onOpenProject(p.id) }) {
-                    Text(p.name, color = TextPrimary, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        listOfNotNull(p.branch?.let { "⎇ $it" }, plural(p.totalSessions, "session"), p.updatedAt?.let { "updated ${relative(it)}" }).joinToString(" · "),
-                        color = TextSecondary, fontSize = 12.sp,
-                    )
-                }
-            }
-        }
         return
     }
 
     if (err != null) item {
         Banner(errorMessage(err, "your PC"), Icons.Filled.Info, title = "Showing the statistics read earlier", actionLabel = "Retry", busy = view.loading, onAction = { store.loadStats() }, diagnosis = err.diagnosis, modifier = Modifier.padding(top = Space.s))
-    }
-
-    // ---- projects managed
-    item {
-        SectionTitle("Projects managed")
-        BkCard {
-            Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-                Num("Total", st.projects.total.toLong(), Modifier.weight(1f))
-                Num("Active", st.projects.active.toLong(), Modifier.weight(1f))
-                Num("Completed", st.projects.completed.toLong(), Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(Space.s))
-            Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
-                Num("Archived", st.projects.archived.toLong(), Modifier.weight(1f))
-                Num("Recently updated", st.projects.list.count { recent(it.lastActivityAt ?: it.updatedAt) }.toLong(), Modifier.weight(2f))
-            }
-        }
-    }
-    if (st.projects.list.isEmpty()) item {
-        Text("No projects yet. Open a project in BambooKit Desktop and it appears here.", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = Space.s))
-    }
-    items(st.projects.list, key = { "ps:" + it.id }) { p ->
-        Spacer(Modifier.height(Space.s))
-        ProjectStatRow(p, saving = p.id in view.saving, onStatus = { store.setProjectStatus(p.id, it) }, onOpen = { onOpenProject(p.id) })
     }
 
     // ---- coding time
@@ -215,6 +169,63 @@ fun LazyListScope.profileStats(view: StatsView, projects: List<Project>, store: 
     }
     item {
         st.timeZone?.let { Text("Times are counted in $it.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = Space.xs)) }
+    }
+}
+
+/**
+ * Projects managed: counts and the project list with status changes, shown at the bottom of the Profile screen.
+ * With a server older than API 1.1.0 (no statistics) the projects known from the project list are still shown.
+ */
+fun LazyListScope.profileProjects(view: StatsView, projects: List<Project>, store: BambooStore, onOpenProject: (String) -> Unit) {
+    val st = view.stats
+    if (st == null) {
+        if (projects.isNotEmpty()) {
+            item {
+                SectionTitle("Projects managed")
+                BkCard {
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                        Num("Total", projects.size.toLong(), Modifier.weight(1f))
+                        Num("Recently updated", projects.count { recent(it.updatedAt) }.toLong(), Modifier.weight(1f))
+                    }
+                    Text("Status, coding time and per-project totals need the updated server.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = Space.s))
+                }
+            }
+            items(projects.sortedByDescending { it.updatedAt }, key = { "pf:" + it.id }) { p ->
+                Spacer(Modifier.height(Space.s))
+                BkCard(onClick = { onOpenProject(p.id) }) {
+                    Text(p.name, color = TextPrimary, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        listOfNotNull(p.branch?.let { "⎇ $it" }, plural(p.totalSessions, "session"), p.updatedAt?.let { "updated ${relative(it)}" }).joinToString(" · "),
+                        color = TextSecondary, fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    // ---- projects managed
+    item {
+        SectionTitle("Projects managed")
+        BkCard {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                Num("Total", st.projects.total.toLong(), Modifier.weight(1f))
+                Num("Active", st.projects.active.toLong(), Modifier.weight(1f))
+                Num("Completed", st.projects.completed.toLong(), Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(Space.s))
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+                Num("Archived", st.projects.archived.toLong(), Modifier.weight(1f))
+                Num("Recently updated", st.projects.list.count { recent(it.lastActivityAt ?: it.updatedAt) }.toLong(), Modifier.weight(2f))
+            }
+        }
+    }
+    if (st.projects.list.isEmpty()) item {
+        Text("No projects yet. Open a project in BambooKit Desktop and it appears here.", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = Space.s))
+    }
+    items(st.projects.list, key = { "ps:" + it.id }) { p ->
+        Spacer(Modifier.height(Space.s))
+        ProjectStatRow(p, saving = p.id in view.saving, onStatus = { store.setProjectStatus(p.id, it) }, onOpen = { onOpenProject(p.id) })
     }
 }
 
