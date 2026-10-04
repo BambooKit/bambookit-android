@@ -131,7 +131,7 @@ internal fun ModelPickerSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text(p.name ?: p.id, color = if (p.configured) TextPrimary else TextMuted, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text(brandModel(p.name ?: p.id) ?: p.id, color = if (p.configured) TextPrimary else TextMuted, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                 Text(
                                     if (p.configured) "${plural(p.models.size, "model")} · Configured ✓" else "No key on $pcName · add one in Profile → AI providers",
                                     color = if (p.configured) StatusSuccess else TextMuted, fontSize = 11.sp,

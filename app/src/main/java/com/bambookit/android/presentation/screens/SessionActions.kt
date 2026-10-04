@@ -130,7 +130,7 @@ fun SessionMenu(store: BambooStore, s: Session?, onReload: () -> Unit) {
                 text = { Text("Rename") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, enabled = s != null,
                 onClick = { menu = false; renaming = true },
             )
-            DropdownMenuItem(text = { Text("Reload") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = { menu = false; onReload() })
+            DropdownMenuItem(text = { Text("Reload") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = { menu = false; onReload(); store.notify("Reloading this session…") })
         }
     }
     if (renaming && s != null) RenameSessionDialog(store, s, onDismiss = { renaming = false })

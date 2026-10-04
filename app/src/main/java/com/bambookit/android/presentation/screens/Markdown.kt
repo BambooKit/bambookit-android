@@ -72,26 +72,6 @@ private fun inline(text: String, color: Color): AnnotatedString = buildAnnotated
     append(text.substring(last))
 }
 
-@Composable
-private fun CodeBlock(language: String, body: String) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
-    val shape = RoundedCornerShape(10.dp)
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(shape).background(CodeBlockBackground).border(1.dp, BambooBorder, shape)) {
-        Row(Modifier.fillMaxWidth().background(BambooSurfaceElevated).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(language.ifBlank { "code" }, color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            IconButton(onClick = { clipboard.setText(AnnotatedString(body)); copied = true }, modifier = Modifier.size(34.dp)) {
-                Icon(if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy, if (copied) "Copied" else "Copy code", tint = if (copied) StatusSuccess else TextSecondary, modifier = Modifier.size(15.dp))
-            }
-        }
-        HorizontalDivider(color = BambooBorder)
-        Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp)) {
-            Text(body, color = TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp, softWrap = false)
-        }
-    }
-}
-
 /** Small markdown renderer for agent messages: code fences, headings, bullets, quotes, rules, bold, italic and inline code. */
 @Composable
 fun MarkdownText(text: String, color: Color = TextPrimary) {

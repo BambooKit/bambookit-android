@@ -251,9 +251,9 @@ private fun NodeBox(n: LiveNode, selected: Boolean, linked: Boolean, onClick: ()
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(7.dp).clip(RoundedCornerShape(4.dp)).background(c))
             Spacer(Modifier.width(6.dp))
-            Text(n.label, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(brandModel(n.label) ?: n.label, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        n.detail?.takeIf { it.isNotBlank() }?.let { Text(it, color = TextSecondary, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        n.detail?.takeIf { it.isNotBlank() }?.let { Text(brandModel(it) ?: it, color = TextSecondary, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
     }
 }
 

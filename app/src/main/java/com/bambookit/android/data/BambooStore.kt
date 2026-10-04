@@ -329,6 +329,8 @@ class BambooStore(
             _sessions.value = api.sessions()
             _approvals.value = api.approvals()
             _notifications.value = api.notifications()
+            // Request details of requests that are no longer pending are dropped (re-read when shown again).
+            _approvalDetails.update { m -> m.filterKeys { id -> _approvals.value.any { it.id == id } } }
             _error.value = null
             _loaded.value = true
         }.onFailure { report("Refresh failed", it) }

@@ -185,7 +185,7 @@ fun ProvidersScreen(store: BambooStore, deviceId: String, onClose: () -> Unit) {
                     items(rows, key = { it.id }) { p ->
                         ProviderRow(
                             p, canSetKey = p.id in connectable, busy = p.id in view.busy, canEncrypt = !pc?.encryptionKey.isNullOrBlank(),
-                            onKey = { keyFor = p.id to (p.name ?: p.id) }, onRemove = { removing = p.id to (p.name ?: p.id) },
+                            onKey = { keyFor = p.id to (brandModel(p.name ?: p.id) ?: p.id) }, onRemove = { removing = p.id to (brandModel(p.name ?: p.id) ?: p.id) },
                         )
                         Spacer(Modifier.height(Space.s))
                     }
@@ -221,7 +221,7 @@ private fun ProviderRow(p: AiProvider, canSetKey: Boolean, busy: Boolean, canEnc
     BkCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(p.name ?: p.id, color = TextPrimary, fontWeight = FontWeight.Medium)
+                Text(brandModel(p.name ?: p.id) ?: p.id, color = TextPrimary, fontWeight = FontWeight.Medium)
                 Text(
                     listOfNotNull(
                         if (p.configured) "Configured ✓" else "Not configured",
