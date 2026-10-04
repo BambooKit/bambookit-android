@@ -232,6 +232,7 @@ internal fun SummaryPane(
     onStop: () -> Unit,
     onRetry: () -> Unit,
     onOpen: (SessionTabId) -> Unit,
+    onRetryTodos: () -> Unit,
 ) {
     val s = d.session
     val hv = d.history
@@ -278,6 +279,12 @@ internal fun SummaryPane(
                     actionLabel = "Retry", busy = hv.loading, onAction = onRetry,
                 )
             } else if (data == null && hv.loading) item { LoadingState("Reading this session from $pcTitle…") }
+            if (d.todos.todos.isNotEmpty() || d.todos.error != null || s?.isActive == true) item {
+                SectionTitle("Todos") {
+                    if (d.todos.todos.isNotEmpty()) androidx.compose.material3.TextButton(onClick = { onOpen(SessionTabId.Todos) }) { Text("Open", fontSize = 12.sp) }
+                }
+                TodoSection(d.todos, pcTitle, onRetryTodos)
+            }
             if (pending.isNotEmpty()) {
                 item { SectionTitle("Waiting for you") }
                 items(pending, key = { "p:" + it.id }) {

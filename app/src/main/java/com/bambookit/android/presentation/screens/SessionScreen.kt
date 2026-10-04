@@ -93,7 +93,7 @@ import com.bambookit.android.presentation.theme.UserBubble
 
 /** Segments of the session screen, in display order. */
 internal enum class SessionTabId(val label: String) {
-    Summary("Summary"), Prompts("Prompts"), Timeline("Timeline"), Changes("Changes"),
+    Summary("Summary"), Todos("Todos"), Prompts("Prompts"), Timeline("Timeline"), Changes("Changes"),
     Files("Files"), Project("Project"), Diagram("Diagram"), Chat("Chat"),
 }
 
@@ -139,6 +139,7 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                     SessionTabId.Prompts -> h?.prompts?.size
                     SessionTabId.Changes -> h?.changes?.size
                     SessionTabId.Timeline -> approvals.count { it.isPending }
+                    SessionTabId.Todos -> d?.let { openTodos(it.todos) }
                     else -> null
                 }?.takeIf { it > 0 }
                 Tab(
@@ -157,7 +158,9 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                         d, pc, pcTitle,
                         approvalCard = { ApprovalCard(it, store, pcName = pc?.name) },
                         onStop = { confirmStop = true }, onRetry = store::reloadSession, onOpen = { tab = it },
+                        onRetryTodos = store::loadTodos,
                     )
+                    SessionTabId.Todos -> TodoPane(d.todos, pcTitle, onRetry = store::loadTodos)
                     SessionTabId.Prompts -> HistoryGate(d, pcTitle, store::reloadSession) { data ->
                         PromptsPane(data, onJump = { id -> focusPrompt = id; tab = SessionTabId.Timeline })
                     }
