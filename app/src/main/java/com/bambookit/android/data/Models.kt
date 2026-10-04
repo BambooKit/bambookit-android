@@ -209,6 +209,10 @@ data class NotificationItem(
     val createdAt: String,
 )
 
+/** DELETE /v1/activity and the 'activity.cleared' event: activity up to this event sequence is hidden. */
+@Serializable
+data class ActivityCleared(val clearedThroughSeq: Long = 0, val notificationsRemoved: Int = 0)
+
 @Serializable
 data class RealtimeEvent(
     val seq: Long,

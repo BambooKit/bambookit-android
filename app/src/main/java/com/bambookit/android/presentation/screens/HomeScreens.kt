@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -121,6 +122,19 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
     val error by store.error.collectAsState()
     val refreshing by store.refreshing.collectAsState()
     val notifications by store.notifications.collectAsState()
+    val clear by store.clearActivity.collectAsState()
+    var confirmClear by rememberSaveable { mutableStateOf(false) }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            containerColor = BambooSurfaceElevated,
+            title = { Text("Clear recent activity?") },
+            text = { Text("Recent activity and notifications are removed for your account on all your devices. Sessions and approvals are not affected.", color = TextSecondary) },
+            confirmButton = { TextButton(onClick = { confirmClear = false; store.clearRecentActivity() }) { Text("Clear", color = StatusFailed) } },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+        )
+    }
 
     RefreshBox(refreshing = refreshing, onRefresh = { store.refreshAll() }) {
         val o = overview
@@ -174,7 +188,27 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
             item {
                 SectionTitle("Recent activity") {
                     val unread = notifications.count { it.readAt == null }
-                    if (unread > 0) TextButton(onClick = { store.markAllRead() }) { Text("Mark $unread read", fontSize = 12.sp) }
+                    if (unread > 0) TextButton(onClick = { store.markAllRead() }, enabled = !clear.clearing) { Text("Mark $unread read", fontSize = 12.sp) }
+                    if (notifications.isNotEmpty() || clear.clearing) {
+                        TextButton(onClick = { confirmClear = true }, enabled = !clear.clearing) {
+                            if (clear.clearing) {
+                                CircularProgressIndicator(Modifier.size(12.dp), color = TextSecondary, strokeWidth = 1.5.dp)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Clearing…", fontSize = 12.sp)
+                            } else Text("Clear", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            clear.error?.let { message ->
+                item {
+                    Banner(
+                        message, Icons.Filled.SyncProblem, color = StatusFailed, tint = StatusFailedTint,
+                        title = "Recent activity not cleared",
+                        actionLabel = "Retry", onAction = { store.clearRecentActivity() },
+                        diagnosis = clear.errorDiagnosis ?: com.bambookit.android.data.Diagnosis(message),
+                        modifier = Modifier.padding(bottom = Space.s),
+                    )
                 }
             }
             if (notifications.isEmpty()) item {

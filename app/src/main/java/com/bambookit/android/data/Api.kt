@@ -236,6 +236,10 @@ class ApiClient(
         post<JsonObject>("/v1/notifications/read-all")
     }
 
+    /** Clears this account's recent activity and deletes its notifications (API: DELETE /v1/activity). */
+    suspend fun clearActivity(): ActivityCleared =
+        call("DELETE", "/v1/activity", null, Envelope.serializer(ActivityCleared.serializer())).data
+
     // ---------------------------------------------------------------- profile
 
     suspend fun avatarUpload(contentType: String, size: Int): AvatarUpload =

@@ -51,7 +51,7 @@ class BambooKitApp : Application() {
         val api = ApiClient(http, auth, secure, json)
         val realtime = RealtimeClient(http, auth, secure, json, scope)
         notifier = BambooNotifier(this).also { it.createChannels() }
-        store = BambooStore(api, auth, realtime, secure, json, scope, DiagramCache(File(cacheDir, "diagrams"), json), notifier::post)
+        store = BambooStore(api, auth, realtime, secure, json, scope, DiagramCache(File(cacheDir, "diagrams"), json), notifier::post, notifier::cancelActivityNotifications)
         updater = AppUpdater(this, http, json, scope)
         // Signing out (here or because the sign-in expired) stops the background connection.
         scope.launch {

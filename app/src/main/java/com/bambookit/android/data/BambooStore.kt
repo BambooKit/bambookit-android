@@ -217,7 +217,14 @@ class BambooStore(
     private val scope: CoroutineScope,
     private val diagramCache: DiagramCache,
     private val notifier: (NotificationItem) -> Unit,
+    /** Removes the BambooKit notifications posted on the phone (not the ongoing "connected" one). */
+    private val cancelPostedNotifications: () -> Unit = {},
 ) {
+    /** Recent activity cleared through a sequence: replayed events at or below it don't come back. */
+    private val activityClear = ActivityClearFilter()
+    private val _clearActivity = MutableStateFlow(ClearActivityView())
+    /** The Clear button of Recent activity: in progress, or the last failure (shown with ⓘ). */
+    val clearActivity: StateFlow<ClearActivityView> = _clearActivity
     /** Each BambooKit notification rings once, and never for events from before the connection started. */
     private val notificationGate = NotificationGate()
     val session get() = auth.session
@@ -344,6 +351,8 @@ class BambooStore(
         auth.signOut()
         imageCache.evictAll()
         notificationGate.clear()
+        activityClear.reset()
+        _clearActivity.value = ClearActivityView()
         diagramCache.clear()
         _profile.value = ProfileView()
         _stats.value = StatsView()
@@ -1085,6 +1094,31 @@ class BambooStore(
         refreshOverviewSoon()
     }
 
+    /** Clears recent activity and notifications for this account (all devices), then empties the list here. */
+    fun clearRecentActivity() = scope.launch {
+        if (_clearActivity.value.clearing) return@launch
+        _clearActivity.value = ClearActivityView(clearing = true)
+        runCatching { api.clearActivity() }
+            .onSuccess { r ->
+                applyActivityCleared(r.clearedThroughSeq)
+                _clearActivity.value = ClearActivityView()
+            }
+            .onFailure { e -> _clearActivity.value = ClearActivityView(error = "Couldn't clear recent activity: ${e.message}", errorDiagnosis = e.diagnosis()) }
+    }
+
+    fun dismissClearActivityError() {
+        _clearActivity.value = ClearActivityView()
+    }
+
+    /** Recent activity was cleared (here or on another device): empty the list, the unread count and posted notifications. */
+    private fun applyActivityCleared(throughSeq: Long) {
+        activityClear.cleared(throughSeq)
+        // The server deleted every notification of the account.
+        _notifications.value = emptyList()
+        _overview.update { it?.copy(unreadNotifications = 0) }
+        cancelPostedNotifications()
+    }
+
     private suspend fun refreshApprovals() {
         runCatching { _approvals.value = api.approvals() }
         _detail.value?.let { d -> _detail.update { it?.copy(approvals = _approvals.value.filter { a -> a.sessionId == d.sessionId }) } }
@@ -1381,7 +1415,14 @@ class BambooStore(
                         _messages.tryEmit("This BambooKit account was deleted")
                     }
                 }
+                "activity.cleared" -> {
+                    val r = json.decodeFromJsonElement<ActivityCleared>(event.payload)
+                    applyActivityCleared(r.clearedThroughSeq)
+                    _clearActivity.value = ClearActivityView()
+                }
                 "notification" -> {
+                    // Cleared activity stays cleared when stored events are replayed after a reconnect.
+                    if (!activityClear.accepts(event.seq)) return
                     val n = json.decodeFromJsonElement<NotificationItem>(event.payload)
                     _notifications.update { listOf(n) + it.filterNot { x -> x.id == n.id } }
                     if (notificationGate.shouldNotify(n.id, event.seq, realtime.connectionStartSeq)) notifier(n)
@@ -1421,6 +1462,13 @@ class BambooStore(
         _messages.tryEmit(msg)
     }
 }
+
+/** State of the Recent activity Clear button. */
+data class ClearActivityView(
+    val clearing: Boolean = false,
+    val error: String? = null,
+    val errorDiagnosis: Diagnosis? = null,
+)
 
 /** How long "Sent" stays on the send button. */
 private const val SENT_SHOWN_MS = 2000L

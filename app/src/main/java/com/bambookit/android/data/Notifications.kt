@@ -47,6 +47,40 @@ class NotificationGate(private val capacity: Int = 500) {
     fun clear() = seen.clear()
 }
 
+/**
+ * Recent activity was cleared through a server event sequence (DELETE /v1/activity, or 'activity.cleared' from
+ * another device). Stored events at or below that sequence, e.g. replayed after a reconnect, must not bring
+ * entries back; live-only events (seq -1) and newer events are kept.
+ *
+ * Pure Kotlin so it can be unit tested.
+ */
+class ActivityClearFilter {
+    @Volatile
+    var clearedThroughSeq: Long = -1
+        private set
+
+    /** Records a clear; the sequence only moves forward. */
+    @Synchronized
+    fun cleared(throughSeq: Long) {
+        if (throughSeq > clearedThroughSeq) clearedThroughSeq = throughSeq
+    }
+
+    fun accepts(eventSeq: Long): Boolean = eventSeq < 0 || eventSeq > clearedThroughSeq
+
+    @Synchronized
+    fun reset() {
+        clearedThroughSeq = -1
+    }
+}
+
+/**
+ * The posted notifications (id, channel) to remove when recent activity is cleared: everything on the BambooKit
+ * request and session channels, never the ongoing "connected" notification of the background connection.
+ */
+fun postedNotificationsToCancel(posted: List<Pair<Int, String?>>): List<Int> = posted
+    .filter { (id, channel) -> id != BambooNotifier.CONNECTION_NOTIFICATION_ID && channel in BambooNotifier.ACTIVITY_CHANNELS }
+    .map { it.first }
+
 /** Kind of phone notification, which picks its channel. */
 enum class NotifyKind { Request, SessionUpdate }
 
@@ -124,6 +158,19 @@ class BambooNotifier(private val context: Context) {
         runCatching { NotificationManagerCompat.from(context).notify(n.id.hashCode(), builder.build()) }
     }
 
+    /**
+     * Removes the BambooKit request and session notifications this app has posted (recent activity was cleared).
+     * The ongoing background-connection notification stays.
+     */
+    fun cancelActivityNotifications() {
+        runCatching {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            val active = nm.activeNotifications
+            val ids = postedNotificationsToCancel(active.map { it.id to it.notification.channelId }).toSet()
+            active.filter { it.id in ids }.forEach { nm.cancel(it.tag, it.id) }
+        }
+    }
+
     /** The product is BambooKit everywhere, including text that comes from the engine. */
     private fun brand(text: String) = text.replace(Regex("(?i)opencode"), "BambooKit")
 
@@ -153,6 +200,8 @@ class BambooNotifier(private val context: Context) {
         const val CHANNEL_SESSIONS = "bk_sessions_v2"
         const val CHANNEL_CONNECTION = "bk_connection"
         private const val LEGACY_CHANNEL = "bambookit_agents"
+        /** Channels whose notifications belong to recent activity (removed when it is cleared). */
+        val ACTIVITY_CHANNELS = setOf(CHANNEL_REQUESTS, CHANNEL_SESSIONS, LEGACY_CHANNEL)
         const val EXTRA_SESSION_ID = "sessionId"
         const val EXTRA_APPROVAL_ID = "approvalId"
         const val EXTRA_NOTIFICATION_ID = "notificationId"
