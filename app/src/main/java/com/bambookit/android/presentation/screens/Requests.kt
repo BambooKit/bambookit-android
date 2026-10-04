@@ -1,5 +1,15 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.data.ApprovalDetailView
+import com.bambookit.android.data.command
+import com.bambookit.android.data.diff
+import com.bambookit.android.data.diffTruncated
+import com.bambookit.android.data.filePath
+import com.bambookit.android.data.jsonText
+import com.bambookit.android.data.otherMetadata
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -100,6 +110,11 @@ internal fun replyLabel(reply: String?) = when (reply) {
 @Composable
 fun ApprovalCard(a: Approval, store: BambooStore, pcName: String? = null, onOpen: (() -> Unit)? = null) {
     val question = a.isQuestion
+    val details by store.approvalDetails.collectAsState()
+    // The full request (complete command, proposed diff, question context) is read live from the PC.
+    LaunchedEffect(a.id, a.status) { if (a.isPending) store.loadApprovalDetail(a.id) }
+    val detail = details[a.id]
+    val full = detail?.detail?.questions?.takeIf { it.isNotEmpty() && question }?.let { a.copy(questions = it) } ?: a
     BkCard(onClick = onOpen, border = if (question) QuestionBorder else RequestBorder) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (question) IconTile(Icons.AutoMirrored.Filled.HelpOutline, tint = QuestionAccent, background = QuestionAccentTint, size = 34.dp)
@@ -118,31 +133,70 @@ fun ApprovalCard(a: Approval, store: BambooStore, pcName: String? = null, onOpen
             Text(relative(a.createdAt), color = TextMuted, fontSize = 11.sp)
         }
         Spacer(Modifier.height(Space.m))
-        RequestBody(a)
+        RequestBody(a, detail, pcName ?: "your PC", onRetry = { store.loadApprovalDetail(a.id, force = true) })
         Spacer(Modifier.height(Space.m))
-        RequestActions(a, store)
+        RequestActions(full, store)
     }
 }
 
 /** What is being asked: the permission and its patterns, or nothing extra for questions (the form shows them). */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RequestBody(a: Approval) {
-    if (a.isQuestion) return
+private fun RequestBody(a: Approval, view: ApprovalDetailView?, pcName: String, onRetry: () -> Unit) {
+    val detail = view?.detail
+    if (a.isQuestion) {
+        jsonText(detail?.context)?.let { CollapsibleBlock(it, "context from the agent") }
+        DetailStatus(a, view, pcName, onRetry)
+        return
+    }
     Text("The agent wants to ${permissionSentence(a.permission)}.", color = TextPrimary, fontSize = 14.sp, lineHeight = 20.sp)
     if (a.permission.isNotBlank()) {
         Spacer(Modifier.height(Space.s))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { Chip("Permission: ${a.permission}", TextSecondary, icon = Icons.Filled.Bolt) }
     }
-    a.title?.takeIf { it.isNotBlank() }?.let {
+    val command = detail?.command()
+    val path = detail?.filePath()
+    val diff = detail?.diff()
+    command?.let { CollapsibleBlock(it, "command", startExpanded = true) }
+    // Without the full detail, the title the PC synced is the best summary (shown complete).
+    if (command == null) (detail?.title ?: a.title)?.takeIf { it.isNotBlank() && it != path }?.let { CollapsibleBlock(it, "request") }
+    path?.let {
         Spacer(Modifier.height(Space.s))
-        Mono(it, color = TextPrimary, size = 12, maxLines = 8, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(CodeBlockBackground).padding(10.dp))
+        Text("File", color = TextMuted, fontSize = 11.sp)
+        SelectionContainer { Mono(it, color = TextPrimary, size = 12, maxLines = 4) }
     }
-    val patterns = a.patterns.filter { it.isNotBlank() }.filter { it != a.title }
+    diff?.let {
+        InlineDiff(it, "proposed change", collapsedLines = 60)
+        if (detail.diffTruncated()) Text("The PC shortened this diff; open the session on the PC to see all of it.", color = StatusWarning, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+    }
+    detail?.otherMetadata()?.forEach { (k, v) -> CollapsibleBlock(v, k) }
+    val patterns = (detail?.patterns?.takeIf { it.isNotEmpty() } ?: a.patterns).filter { it.isNotBlank() }.filter { it != a.title && it != command }
     if (patterns.isNotEmpty()) {
         Spacer(Modifier.height(Space.s))
         Text(if (patterns.size == 1) "Applies to" else "Applies to these patterns", color = TextMuted, fontSize = 11.sp)
-        Mono(patterns.joinToString("\n"), color = TextSecondary, size = 12, maxLines = 6, modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+        SelectionContainer { Mono(patterns.joinToString("\n"), color = TextSecondary, size = 12, maxLines = Int.MAX_VALUE, modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) }
+    }
+    DetailStatus(a, view, pcName, onRetry)
+}
+
+/** Loading / error line for the request's full detail (never a silent failure). */
+@Composable
+private fun DetailStatus(a: Approval, view: ApprovalDetailView?, pcName: String, onRetry: () -> Unit) {
+    if (!a.isPending) return
+    val err = view?.error
+    when {
+        view == null || (view.loading && view.detail == null) -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Space.s)) {
+            CircularProgressIndicator(Modifier.size(12.dp), color = StatusRunning, strokeWidth = 1.5.dp)
+            Spacer(Modifier.width(6.dp))
+            Text("Reading the full request from $pcName…", color = TextMuted, fontSize = 11.sp)
+        }
+        err != null -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Space.s)) {
+            Text(
+                "${errorTitle(err, pcName, "Couldn't read the full request")}. ${if (err.desktopOutdated) "Update BambooKit Desktop to see the full command and diff here." else "Showing the summary."}",
+                color = StatusWarning, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onRetry, enabled = !view.loading) { Text(if (view.loading) "Retrying…" else "Retry", fontSize = 12.sp) }
+        }
     }
 }
 
@@ -284,7 +338,7 @@ internal fun RequestSummary(a: Approval) {
             if (a.permission.isNotBlank()) Text("  ·  ${a.permission}", color = TextSecondary, fontSize = 12.sp)
         }
         (a.title ?: a.patterns.joinToString("\n")).takeIf { it.isNotBlank() }?.let {
-            Mono(it, color = TextPrimary, size = 11, maxLines = 4, modifier = Modifier.padding(top = 4.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(CodeBlockBackground).padding(horizontal = 8.dp, vertical = 5.dp))
+            CollapsibleBlock(it, a.permission.ifBlank { "request" }, collapsedLines = 6)
         }
     }
 }
