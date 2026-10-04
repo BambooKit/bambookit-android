@@ -167,6 +167,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
     var confirmSignOut by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var preparing by remember { mutableStateOf(false) }
+    var providersFor by remember { mutableStateOf<String?>(null) }
     val account: Account? = profile.account
     LaunchedEffect(Unit) { store.loadProfile() }
     BackHandler(onBack = onBack)
@@ -182,6 +183,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
         }
     }
 
+    providersFor?.let { id -> ProvidersScreen(store, id, onClose = { providersFor = null }) }
     Column(Modifier.fillMaxSize()) {
         ScreenTopBar(
             "Profile", account?.email ?: session?.email,
@@ -228,6 +230,10 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
                 if (account != null) item {
                     SectionTitle("Nickname")
                     BkCard { NicknameEditor(store, account) }
+                }
+                item {
+                    SectionTitle("AI providers")
+                    AiProvidersSection(store, onOpen = { providersFor = it })
                 }
                 // Settings live here only (not on the Devices tab): notifications, App lock and updates.
                 item {
