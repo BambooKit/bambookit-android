@@ -81,6 +81,9 @@ fun postedNotificationsToCancel(posted: List<Pair<Int, String?>>): List<Int> = p
     .filter { (id, channel) -> id != BambooNotifier.CONNECTION_NOTIFICATION_ID && channel in BambooNotifier.ACTIVITY_CHANNELS }
     .map { it.first }
 
+/** The product is BambooKit everywhere, including notification text that comes from the engine. */
+fun brandText(text: String): String = text.replace(Regex("(?i)opencode"), "BambooKit")
+
 /** Kind of phone notification, which picks its channel. */
 enum class NotifyKind { Request, SessionUpdate }
 
@@ -172,7 +175,7 @@ class BambooNotifier(private val context: Context) {
     }
 
     /** The product is BambooKit everywhere, including text that comes from the engine. */
-    private fun brand(text: String) = text.replace(Regex("(?i)opencode"), "BambooKit")
+    private fun brand(text: String) = brandText(text)
 
     /** The silent ongoing notification of the background connection service. */
     fun connectionNotification(connected: Boolean): android.app.Notification {

@@ -71,4 +71,10 @@ class ClearActivityTest {
         assertEquals("activity.cleared", e.type)
         assertEquals(812, json.decodeFromJsonElement(ActivityCleared.serializer(), e.payload).clearedThroughSeq)
     }
+
+    @Test
+    fun `notification text never shows the engine name`() {
+        assertEquals("that lives in your BambooKit client", brandText("that lives in your opencode client"))
+        assertEquals("BambooKit and BambooKit", brandText("OpenCode and OPENCODE"))
+    }
 }

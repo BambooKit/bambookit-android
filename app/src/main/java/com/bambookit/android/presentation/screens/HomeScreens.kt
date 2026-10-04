@@ -266,10 +266,10 @@ private fun NotificationRow(n: NotificationItem, onClick: (() -> Unit)?) {
             Spacer(Modifier.width(Space.m))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(n.title, color = TextPrimary, fontSize = 13.sp, fontWeight = if (n.readAt == null) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(com.bambookit.android.data.brandText(n.title), color = TextPrimary, fontSize = 13.sp, fontWeight = if (n.readAt == null) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     Text(relative(n.createdAt), color = TextMuted, fontSize = 11.sp)
                 }
-                if (n.body.isNotBlank()) Text(n.body, color = TextSecondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (n.body.isNotBlank()) Text(com.bambookit.android.data.brandText(n.body), color = TextSecondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
     }
