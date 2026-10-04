@@ -186,7 +186,11 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                         onLoad = { store.loadTree(it) }, onOpenFile = store::openFile,
                     )
                     SessionTabId.Diagram -> if (s == null) LoadingState("Loading session…")
-                    else DiagramPane(d, pcTitle, onLoad = { store.loadDiagram() }, onLoadFileMap = { store.loadFileMap() }, onOpenFile = store::openFile)
+                    else DiagramTab(
+                        store, d, pcTitle,
+                        projectMap = { DiagramPane(d, pcTitle, onLoad = { store.loadDiagram() }, onLoadFileMap = { store.loadFileMap() }, onOpenFile = store::openFile) },
+                        onOpenChange = { openChange = it },
+                    )
                     SessionTabId.Chat -> ChatTab(d, pcTitle, onRetry = store::retryContent, onRefresh = store::reloadSession)
                 }
             }
