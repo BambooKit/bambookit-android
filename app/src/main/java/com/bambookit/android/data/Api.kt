@@ -131,6 +131,12 @@ class ApiClient(
     suspend fun setTimeZone(zone: String) {
         call("PATCH", "/v1/me", buildJsonObject { put("timeZone", zone) }, JsonObject.serializer())
     }
+    /** The account's plan (Free / Pro), today's usage and whether ads are shown. */
+    suspend fun plan(): Plan = get("/v1/me/plan")
+    /** Pro products on the website, plan limits and rewarded-ad rules (public). */
+    suspend fun billingPlans(): BillingPlans = get("/v1/billing/plans")
+    /** A one-time token for a rewarded ad's server-side verification; requested right before the ad is shown. */
+    suspend fun rewardToken(): RewardToken = post("/v1/rewards/token")
     suspend fun overview(): Overview = get("/v1/overview")
     suspend fun devices(): List<Device> = get("/v1/devices")
     suspend fun projects(): List<Project> = get("/v1/projects")

@@ -1,6 +1,7 @@
 package com.bambookit.android
 
 import android.app.Application
+import com.bambookit.android.ads.AdsManager
 import com.bambookit.android.data.AppLock
 import com.bambookit.android.data.AppUpdater
 import com.bambookit.android.data.ApiClient
@@ -35,6 +36,9 @@ class BambooKitApp : Application() {
         private set
     lateinit var notifier: BambooNotifier
         private set
+    /** Ads on the Free plan (AdMob + consent). Idle unless the plan has ads. */
+    lateinit var ads: AdsManager
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -53,6 +57,8 @@ class BambooKitApp : Application() {
         notifier = BambooNotifier(this).also { it.createChannels() }
         store = BambooStore(api, auth, realtime, secure, json, scope, DiagramCache(File(cacheDir, "diagrams"), json), notifier::post, notifier::cancelActivityNotifications)
         updater = AppUpdater(this, http, json, scope)
+        ads = AdsManager(this, scope)
+        scope.launch { store.plan.map { it.plan }.distinctUntilChanged().collect { ads.onPlan(it) } }
         // Signing out (here or because the sign-in expired) stops the background connection.
         scope.launch {
             auth.session.map { it != null }.distinctUntilChanged().collect { signedIn -> if (!signedIn) ConnectionService.stop(this@BambooKitApp) }

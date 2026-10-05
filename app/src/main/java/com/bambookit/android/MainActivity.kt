@@ -14,6 +14,10 @@ import com.bambookit.android.presentation.screens.LocalAppLocked
 import com.bambookit.android.presentation.screens.LocalDiagHandlers
 import com.bambookit.android.presentation.screens.DiagHandlers
 import com.bambookit.android.presentation.screens.ProfileScreen
+import com.bambookit.android.presentation.screens.AdBanner
+import com.bambookit.android.presentation.screens.PlanLimitDialog
+import com.bambookit.android.presentation.screens.findActivity
+import com.bambookit.android.ads.AdPolicy
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -179,6 +183,10 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     var pairStatus by remember { mutableStateOf<String?>(null) }
     var pendingPairToken by remember { mutableStateOf<String?>(null) }
     val approvals by store.approvals.collectAsState()
+    val planView by store.plan.collectAsState()
+    val plan = planView.plan
+    val planLimit by store.planLimit.collectAsState()
+    val locked = LocalAppLocked.current
 
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val context = LocalContext.current
@@ -254,6 +262,12 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
             claim(token)
         }
     }
+    // Free plan: gather ad consent (UMP; the form shows only where required, e.g. EEA/UK) once the plan is known
+    // and the app is unlocked. The ads SDK starts only after that. Pro never gets here.
+    val adsOn = AdPolicy.adsEnabled(plan)
+    LaunchedEffect(adsOn, locked, session?.userId) {
+        if (adsOn && !locked && session != null) context.findActivity()?.let { app.ads.gatherConsent(it) }
+    }
     LaunchedEffect(Unit) { store.messages.collect { snackbar.showSnackbar(it) } }
     // An update really replaced the app: say so once.
     LaunchedEffect(Unit) {
@@ -310,11 +324,15 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
             val current = openSession
             if (showProfile) {
                 ProfileScreen(
-                    store, app.updater, app.lock, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } },
+                    store, app.updater, app.lock, app.ads, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } },
                     onOpenProject = { id -> showProfile = false; tab = Tab.Projects; focusProject = id },
                 )
             } else if (current != null) {
-                SessionScreen(store, current, onBack = { openSession = null })
+                SessionScreen(store, current, onBack = {
+                    openSession = null
+                    // A natural break (back to the list): maybe an interstitial, within AdPolicy's limits.
+                    context.findActivity()?.let { app.ads.onLeftSession(it, pendingRequests = approvals.count { a -> a.isPending }, locked = locked) }
+                })
             } else Column(Modifier.fillMaxSize()) {
                 TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan) {
                     ProfileButton(store, profile.account?.avatarUrl, accountName ?: accountEmail) { showProfile = true }
@@ -330,8 +348,17 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                         Tab.Devices -> DevicesScreen(store, pairStatus, onScan = ::scan, onProfile = { showProfile = true })
                     }
                 }
+                // Free plan only: an adaptive banner above the bottom navigation, on Home and Projects only.
+                when (tab) {
+                    Tab.Home -> AdBanner(app.ads, plan, AdPolicy.Placement.Home)
+                    Tab.Projects -> AdBanner(app.ads, plan, AdPolicy.Placement.Projects)
+                    else -> Unit
+                }
             }
         }
+    }
+    planLimit?.let { limit ->
+        if (!locked) PlanLimitDialog(store, app.ads, limit, plan, onDismiss = { store.dismissPlanLimit(); app.ads.clearReward() })
     }
     if (showSetup && account != null && userId != null) {
         ProfileSetupSheet(store, account, onClose = {

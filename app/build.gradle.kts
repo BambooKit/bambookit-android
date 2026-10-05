@@ -34,6 +34,10 @@ android {
         buildConfigField("String", "SUPABASE_URL", "\"${bkProp("bambookit.supabaseUrl")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${bkProp("bambookit.supabaseAnonKey")}\"")
         manifestPlaceholders["authScheme"] = "bambookit"
+        // Google AdMob app id (gradle.properties). Ads are shown on the Free plan only.
+        manifestPlaceholders["admobAppId"] = bkProp("bambookit.admob.appId")
+        // Price list and Pro purchase live on the website (no in-app payment).
+        buildConfigField("String", "PRICING_URL", "\"${bkProp("bambookit.pricingUrl", "https://bambookit-web.onrender.com/pricing/")}\"")
     }
 
     // Release APKs are signed with the BambooKit release key so every update installs over the previous
@@ -56,6 +60,10 @@ android {
             if (releaseStore != null) signingConfig = signingConfigs.getByName("release")
             buildConfigField("String", "API_URL", "\"${bkProp("bambookit.apiUrl.release", "https://bambookit-api.onrender.com")}\"")
             manifestPlaceholders["cleartext"] = "false"
+            // Real AdMob ad units (release only).
+            buildConfigField("String", "ADMOB_BANNER", "\"${bkProp("bambookit.admob.banner")}\"")
+            buildConfigField("String", "ADMOB_INTERSTITIAL", "\"${bkProp("bambookit.admob.interstitial")}\"")
+            buildConfigField("String", "ADMOB_REWARDED", "\"${bkProp("bambookit.admob.rewarded")}\"")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -67,6 +75,10 @@ android {
             // in local.properties (start-bambookit.ps1 keeps `adb reverse tcp:8080 tcp:8080` applied).
             buildConfigField("String", "API_URL", "\"${bkProp("bambookit.apiUrl.debug", "https://bambookit-api.onrender.com")}\"")
             manifestPlaceholders["cleartext"] = "true"
+            // Google's official test ad units: debug builds never request real ads (AdMob policy).
+            buildConfigField("String", "ADMOB_BANNER", "\"ca-app-pub-3940256099942544/6300978111\"")
+            buildConfigField("String", "ADMOB_INTERSTITIAL", "\"ca-app-pub-3940256099942544/1033173712\"")
+            buildConfigField("String", "ADMOB_REWARDED", "\"ca-app-pub-3940256099942544/5224354917\"")
             applicationIdSuffix = ".debug"
             isDebuggable = true
         }
@@ -117,6 +129,9 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.fragment.ktx)
     implementation(libs.androidx.appcompat)
+    // Ads on the Free plan: Google Mobile Ads and the User Messaging Platform (consent, EEA/UK).
+    implementation(libs.play.services.ads)
+    implementation(libs.ump)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

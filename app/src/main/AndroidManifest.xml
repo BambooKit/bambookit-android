@@ -23,6 +23,14 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="${cleartext}"
         android:theme="@style/Theme.BambooKit">
+        <!-- Google AdMob (Free plan only). The app id comes from gradle.properties via the admobAppId placeholder. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${admobAppId}" />
+        <!-- Nothing ad-related starts before the consent information is gathered (UMP). -->
+        <meta-data
+            android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

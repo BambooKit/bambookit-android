@@ -12,6 +12,11 @@ class ProfileLayoutTest {
     }
 
     @Test
+    fun `plan comes right after the header and statistics`() {
+        assertEquals(ProfileSection.Plan, PROFILE_SECTIONS[2])
+    }
+
+    @Test
     fun `projects managed are at the bottom`() {
         assertEquals(ProfileSection.ProjectsManaged, PROFILE_SECTIONS.last())
     }

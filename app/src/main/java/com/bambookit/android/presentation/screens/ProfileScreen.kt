@@ -67,6 +67,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.bambookit.android.ads.AdsManager
 import com.bambookit.android.data.Account
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.data.AppLock
@@ -159,15 +160,16 @@ private fun providerLabel(provider: String?): String = when (provider) {
 }
 
 /** Sections of the Profile screen, top to bottom. */
-enum class ProfileSection { Header, Statistics, Notifications, AppLock, AppUpdates, AiProviders, Account, SignOut, DangerZone, ProjectsManaged }
+enum class ProfileSection { Header, Statistics, Plan, Notifications, AppLock, AppUpdates, AiProviders, Account, SignOut, DangerZone, ProjectsManaged }
 
 /**
- * Profile header (photo, nickname, email) first, then statistics and achievements, then the settings and account
+ * Profile header (photo, nickname, email) first, then statistics and achievements, the plan (Free / Pro), then the settings and account
  * actions. Projects managed (counts and the project list) are at the bottom.
  */
 val PROFILE_SECTIONS: List<ProfileSection> = listOf(
     ProfileSection.Header,
     ProfileSection.Statistics,
+    ProfileSection.Plan,
     ProfileSection.Notifications,
     ProfileSection.AppLock,
     ProfileSection.AppUpdates,
@@ -180,9 +182,10 @@ val PROFILE_SECTIONS: List<ProfileSection> = listOf(
 
 /** The signed-in user's profile: photo, statistics, settings, account actions and projects managed. */
 @Composable
-fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onBack: () -> Unit, onSignOut: () -> Unit, onOpenProject: (String) -> Unit = {}) {
+fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, ads: AdsManager, onBack: () -> Unit, onSignOut: () -> Unit, onOpenProject: (String) -> Unit = {}) {
     val profile by store.profile.collectAsState()
     val stats by store.stats.collectAsState()
+    val planView by store.plan.collectAsState()
     val projects by store.projects.collectAsState()
     var showUpdates by remember { mutableStateOf(false) }
     val session by store.session.collectAsState()
@@ -196,6 +199,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
     LaunchedEffect(Unit) {
         store.loadProfile()
         store.loadStats()
+        store.loadPlan()
     }
     BackHandler(onBack = onBack)
     if (showUpdates) {
@@ -220,7 +224,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
             "Profile", account?.email ?: session?.email,
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
         )
-        RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats() }) {
+        RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats(); store.loadPlan() }) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
                 // Order: who you are, what you did, settings, account actions; projects managed last.
                 for (section in PROFILE_SECTIONS) when (section) {
@@ -281,6 +285,9 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, onB
                     }
                     ProfileSection.Statistics -> {
                         profileStats(stats, store)
+                    }
+                    ProfileSection.Plan -> {
+                        item { PlanSection(store, ads, planView) }
                     }
                     ProfileSection.Notifications -> {
                         // Settings live here only (not on the Devices tab): notifications, App lock and updates.

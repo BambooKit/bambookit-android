@@ -250,6 +250,12 @@ class BambooStore(
     val profile: StateFlow<ProfileView> = _profile
     private val _stats = MutableStateFlow(StatsView())
     val stats: StateFlow<StatsView> = _stats
+    private val _plan = MutableStateFlow(PlanView())
+    /** The account's plan (Free / Pro), today's usage and whether ads are shown (GET /v1/me/plan, plan.updated). */
+    val plan: StateFlow<PlanView> = _plan
+    private val _planLimit = MutableStateFlow<PlanLimitError?>(null)
+    /** Set when a message or new session was refused with 402 PLAN_LIMIT: the "Daily free limit reached" dialog. */
+    val planLimit: StateFlow<PlanLimitError?> = _planLimit
     private val _errorDiagnosis = MutableStateFlow<Diagnosis?>(null)
     /** Details of the last refresh failure, for the ⓘ sheet. */
     val errorDiagnosis: StateFlow<Diagnosis?> = _errorDiagnosis
@@ -319,6 +325,7 @@ class BambooStore(
             }
         }
         loadProfile()
+        loadPlan()
         // Collectors live until sign-out, so signing in again never adds a second set.
         listenJobs = listOf(
             scope.launch { realtime.ready.collect { refreshAll() } },
@@ -356,6 +363,9 @@ class BambooStore(
         diagramCache.clear()
         _profile.value = ProfileView()
         _stats.value = StatsView()
+        planJob?.cancel()
+        _plan.value = PlanView()
+        _planLimit.value = null
         _errorDiagnosis.value = null
         Diagnostics.clear()
         _myDeviceId.value = null
@@ -378,6 +388,8 @@ class BambooStore(
         if (!started || auth.session.value == null) return
         if (!realtime.isRunning) realtime.start()
         if (android.os.SystemClock.elapsedRealtime() - lastRefresh > FOREGROUND_REFRESH_MS) refreshAll()
+        // Pro may have been bought on the website (or expired) while the app was in the background.
+        else loadPlan()
     }
 
     fun refreshAll() = scope.launch {
@@ -404,6 +416,7 @@ class BambooStore(
         // Providers shown on screen are re-read too (a reconnect may follow a PC update).
         _providers.value.keys.forEach { loadProviders(it, force = true) }
         if (_profile.value.account == null) loadProfile()
+        loadPlan()
     }
 
     /** Restarts the live connection (refreshing the sign-in) and re-reads everything. */
@@ -725,6 +738,14 @@ class BambooStore(
                 }
                 .onFailure { e ->
                     sendGuard.finish(false)
+                    PlanLimitError.from(e)?.let { limit ->
+                        // The typed message stays in the box (and in Failed) so it can be sent later.
+                        _planLimit.value = limit
+                        _detail.update { if (it?.sessionId == d.sessionId) it.copy(sending = false, send = SendState.Failed("Daily free limit reached. Your message was not sent.", body)) else it }
+                        loadPlan()
+                        onResult(false)
+                        return@onFailure
+                    }
                     val msg = if ((e as? ApiException)?.code == "SESSION_NOT_CONTINUED") "Continue this session on your PC first." else commandError("Not sent", e)
                     _detail.update { if (it?.sessionId == d.sessionId) it.copy(sending = false, send = SendState.Failed(msg, body)) else it }
                     handleCommandFailure(d.sessionId, "Could not send the message", e)
@@ -775,7 +796,14 @@ class BambooStore(
                         else NewSessionState.Failed("${pcName(project.deviceId)} didn't start the session within a minute. Make sure BambooKit Desktop is open and up to date, then try again.")
                     }
                 }
-                .onFailure { _newSession.value = NewSessionState.Failed(commandError("Could not start the session", it), it.diagnosis()) }
+                .onFailure {
+                    val limit = PlanLimitError.from(it)
+                    if (limit != null) {
+                        _planLimit.value = limit
+                        _newSession.value = NewSessionState.Failed("Daily free limit of new sessions reached.", it.diagnosis())
+                        loadPlan()
+                    } else _newSession.value = NewSessionState.Failed(commandError("Could not start the session", it), it.diagnosis())
+                }
         }
     }
 
@@ -1161,6 +1189,51 @@ class BambooStore(
             .onFailure { e -> _profile.update { it.copy(loading = false, error = e.message, errorDiagnosis = e.diagnosis()) } }
     }
 
+    private var planJob: Job? = null
+
+    /** Reads the plan (GET /v1/me/plan); the website's Pro products are read once alongside it. */
+    fun loadPlan() {
+        if (auth.session.value == null || planJob?.isActive == true) return
+        planJob = scope.launch {
+            _plan.update { it.copy(loading = true) }
+            try {
+                val p = api.plan()
+                _plan.update { it.copy(loading = false, plan = p, error = null) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _plan.update { it.copy(loading = false, error = contentErrorOf(e, "Could not load your plan.")) }
+            }
+            if (_plan.value.products.isEmpty()) runCatching { api.billingPlans() }.onSuccess { b -> _plan.update { it.copy(products = b.products) } }
+        }
+    }
+
+    /**
+     * A rewarded ad was watched. The server grants Pro through AdMob's server-side verification and then sends
+     * plan.updated; that can lag, so the plan is also re-read after about 3 s and a couple more times until it changes.
+     */
+    fun refreshPlanAfterReward() {
+        val before = _plan.value.plan
+        scope.launch {
+            for (wait in REWARD_REFETCH_MS) {
+                delay(wait)
+                val p = runCatching { api.plan() }.getOrNull() ?: continue
+                _plan.update { it.copy(plan = p, error = null) }
+                if (p.isPro || p.rewards.todayCount > (before?.rewards?.todayCount ?: 0)) {
+                    _messages.tryEmit("Pro is on for ${p.rewards.hours} hours. Thanks for watching!")
+                    return@launch
+                }
+            }
+        }
+    }
+
+    /** One-time token for a rewarded ad's server-side verification (POST /v1/rewards/token). */
+    suspend fun rewardToken(): RewardToken = api.rewardToken()
+
+    fun dismissPlanLimit() {
+        _planLimit.value = null
+    }
+
     /** Statistics, projects managed and achievements (GET /v1/me/stats). */
     fun loadStats() = scope.launch {
         _stats.update { it.copy(loading = true) }
@@ -1415,6 +1488,12 @@ class BambooStore(
                         _messages.tryEmit("This BambooKit account was deleted")
                     }
                 }
+                "plan.updated" -> {
+                    val p = json.decodeFromJsonElement<Plan>(event.payload)
+                    _plan.update { it.copy(plan = p, loading = false, error = null) }
+                    // Pro arrived (bought or rewarded): the limit dialog is no longer needed.
+                    if (p.isPro) _planLimit.value = null
+                }
                 "activity.cleared" -> {
                     val r = json.decodeFromJsonElement<ActivityCleared>(event.payload)
                     applyActivityCleared(r.clearedThroughSeq)
@@ -1469,6 +1548,9 @@ data class ClearActivityView(
     val error: String? = null,
     val errorDiagnosis: Diagnosis? = null,
 )
+
+/** Re-reads of the plan after a rewarded ad (server-side verification can lag). */
+private val REWARD_REFETCH_MS = listOf(3_000L, 5_000L, 10_000L)
 
 /** How long "Sent" stays on the send button. */
 private const val SENT_SHOWN_MS = 2000L
