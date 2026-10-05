@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -159,6 +160,8 @@ private fun providerLabel(provider: String?): String = when (provider) {
     else -> "Other"
 }
 
+private const val PLAN_ITEM_KEY = "plan"
+
 /** Sections of the Profile screen, top to bottom. */
 enum class ProfileSection { Header, Statistics, Plan, Notifications, AppLock, AppUpdates, AiProviders, Account, SignOut, DangerZone, ProjectsManaged }
 
@@ -182,7 +185,9 @@ val PROFILE_SECTIONS: List<ProfileSection> = listOf(
 
 /** The signed-in user's profile: photo, statistics, settings, account actions and projects managed. */
 @Composable
-fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, ads: AdsManager, onBack: () -> Unit, onSignOut: () -> Unit, onOpenProject: (String) -> Unit = {}) {
+fun ProfileScreen(
+    store: BambooStore, updater: AppUpdater, appLock: AppLock, ads: AdsManager,
+    focusPlan: Boolean = false, onFocused: () -> Unit = {}, onBack: () -> Unit, onSignOut: () -> Unit, onOpenProject: (String) -> Unit = {}) {
     val profile by store.profile.collectAsState()
     val stats by store.stats.collectAsState()
     val planView by store.plan.collectAsState()
@@ -225,7 +230,23 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, ads
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
         )
         RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats(); store.loadPlan() }) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
+            val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+            // Opened from the plan chip on Home: scroll down until the plan section is laid out, then to it.
+            LaunchedEffect(focusPlan) {
+                if (!focusPlan) return@LaunchedEffect
+                repeat(30) {
+                    val hit = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == PLAN_ITEM_KEY }
+                    if (hit != null) {
+                        listState.animateScrollToItem(hit.index)
+                        onFocused()
+                        return@LaunchedEffect
+                    }
+                    if (listState.layoutInfo.totalItemsCount > 0) listState.scrollBy(800f)
+                    kotlinx.coroutines.delay(50)
+                }
+                onFocused()
+            }
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(horizontal = Space.screen)) {
                 // Order: who you are, what you did, settings, account actions; projects managed last.
                 for (section in PROFILE_SECTIONS) when (section) {
                     ProfileSection.Header -> {
@@ -287,7 +308,7 @@ fun ProfileScreen(store: BambooStore, updater: AppUpdater, appLock: AppLock, ads
                         profileStats(stats, store)
                     }
                     ProfileSection.Plan -> {
-                        item { PlanSection(store, ads, planView) }
+                        item(key = PLAN_ITEM_KEY) { PlanSection(store, ads, planView) }
                     }
                     ProfileSection.Notifications -> {
                         // Settings live here only (not on the Devices tab): notifications, App lock and updates.

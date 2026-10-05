@@ -340,6 +340,7 @@ fun ScreenTopBar(
     navigationIcon: @Composable () -> Unit = {},
     actions: @Composable RowScope.() -> Unit = {},
     titleLeading: (@Composable () -> Unit)? = null,
+    titleTrailing: (@Composable () -> Unit)? = null,
 ) {
     TopAppBar(
         windowInsets = WindowInsets(0, 0, 0, 0),
@@ -350,7 +351,10 @@ fun ScreenTopBar(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 titleLeading?.let { it(); Spacer(Modifier.width(10.dp)) }
                 Column {
-                    Text(title, color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(title, color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        titleTrailing?.let { Spacer(Modifier.width(Space.s)); it() }
+                    }
                     subtitle?.let { Text(it, color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
             }

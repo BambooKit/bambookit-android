@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,6 +40,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bambookit.android.data.PendingCommand
+import com.bambookit.android.data.Plan
+import com.bambookit.android.data.Quota
 import com.bambookit.android.data.SendState
 import com.bambookit.android.data.Session
 import com.bambookit.android.data.SessionDetail
@@ -70,11 +73,18 @@ internal fun ChatComposer(
     onContinue: () -> Unit,
     onRetry: () -> Unit,
     onStop: () -> Unit,
+    /** The account's plan: on the Free plan the messages left today are shown, and the box locks at 0. */
+    plan: Plan? = null,
+    /** Shown instead of the send error when today's free messages are used up (Watch ad / Upgrade). */
+    limitPanel: @Composable (Plan) -> Unit = {},
 ) {
     var text by rememberSaveable(d.sessionId) { mutableStateOf("") }
     val last: PendingCommand? = d.commands.lastOrNull()
     val send = d.send
     val sending = send is SendState.Sending || d.sending
+    val left = plan?.messagesLeft()
+    val limit = plan?.limits?.phoneMessagesPerDay
+    val locked = plan != null && left == 0
     fun submit(body: String) = onSend(body) { ok -> if (ok && text.trim() == body.trim()) text = "" }
     Column(Modifier.fillMaxWidth().background(ComposerBackground)) {
         if (showActivity && s.isActive) LiveActivity(s, last, onStop = onStop, compact = true)
@@ -102,7 +112,9 @@ internal fun ChatComposer(
                 }
             }
             ModelChip(modelLabel, enabled = !sending, onClick = onPickModel)
-            (send as? SendState.Failed)?.let { f ->
+            if (locked && plan != null) limitPanel(plan)
+            else if (left != null && limit != null) QuotaLine(Quota.messagesText(left, limit), Quota.warn(left), Modifier.padding(bottom = 4.dp))
+            (send as? SendState.Failed)?.takeIf { !locked }?.let { f ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
                     Icon(Icons.Filled.ErrorOutline, null, tint = StatusFailed, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
@@ -118,8 +130,18 @@ internal fun ChatComposer(
                         text = it.take(20_000)
                         if (send is SendState.Failed) onDismissSendError()
                     },
-                    placeholder = { Text(if (s.isActive) "Message the agent (sent after its current step)" else "Message the agent", fontSize = 14.sp) },
-                    enabled = !sending,
+                    placeholder = {
+                        Text(
+                            when {
+                                locked -> "Daily free limit reached"
+                                s.isActive -> "Message the agent (sent after its current step)"
+                                else -> "Message the agent"
+                            },
+                            fontSize = 14.sp,
+                        )
+                    },
+                    leadingIcon = if (locked) ({ Icon(Icons.Filled.Lock, "Locked", tint = StatusWarning, modifier = Modifier.size(18.dp)) }) else null,
+                    enabled = !sending && !locked,
                     maxLines = 5,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     shape = RoundedCornerShape(22.dp),
@@ -130,7 +152,7 @@ internal fun ChatComposer(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(Space.s))
-                SendButton(send, sending, enabled = text.isNotBlank() && !sending) { submit(text) }
+                SendButton(send, sending, enabled = text.isNotBlank() && !sending && !locked, locked = locked) { submit(text) }
             }
         }
     }
@@ -138,7 +160,7 @@ internal fun ChatComposer(
 
 /** The send button: send icon (idle), progress (sending, disabled), check (sent), retry (failed). */
 @Composable
-internal fun SendButton(send: SendState, sending: Boolean, enabled: Boolean, onClick: () -> Unit) {
+internal fun SendButton(send: SendState, sending: Boolean, enabled: Boolean, locked: Boolean = false, onClick: () -> Unit) {
     FilledIconButton(
         onClick = onClick,
         enabled = enabled,
@@ -149,6 +171,7 @@ internal fun SendButton(send: SendState, sending: Boolean, enabled: Boolean, onC
         modifier = Modifier.padding(bottom = 4.dp).size(48.dp),
     ) {
         when {
+            locked -> Icon(Icons.Filled.Lock, "Daily free limit reached")
             sending -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = TextSecondary)
             send is SendState.Sent -> Icon(Icons.Filled.Check, if (send.deviceOnline) "Sent" else "Sent, waiting for your PC")
             send is SendState.Failed -> Icon(Icons.Filled.Refresh, "Not sent. Send again")

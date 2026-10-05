@@ -15,6 +15,7 @@ import com.bambookit.android.presentation.screens.LocalDiagHandlers
 import com.bambookit.android.presentation.screens.DiagHandlers
 import com.bambookit.android.presentation.screens.ProfileScreen
 import com.bambookit.android.presentation.screens.AdBanner
+import com.bambookit.android.presentation.screens.PlanChip
 import com.bambookit.android.presentation.screens.PlanLimitDialog
 import com.bambookit.android.presentation.screens.findActivity
 import com.bambookit.android.ads.AdPolicy
@@ -178,6 +179,8 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
     var openSession by rememberSaveable { mutableStateOf<String?>(null) }
     var showProfile by rememberSaveable { mutableStateOf(false) }
+    /** Profile opened from the plan chip: scroll to the plan section. */
+    var focusPlan by rememberSaveable { mutableStateOf(false) }
     var focusProject by rememberSaveable { mutableStateOf<String?>(null) }
     val profile by store.profile.collectAsState()
     var pairStatus by remember { mutableStateOf<String?>(null) }
@@ -268,6 +271,13 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     LaunchedEffect(adsOn, locked, session?.userId) {
         if (adsOn && !locked && session != null) context.findActivity()?.let { app.ads.gatherConsent(it) }
     }
+    // The daily free counters reset at plan.resetsAt: re-read the plan then, so locks lift without a restart.
+    LaunchedEffect(plan?.resetsAt, session?.userId) {
+        val at = plan?.resetsAtMs() ?: return@LaunchedEffect
+        val wait = at - System.currentTimeMillis()
+        if (wait > 0) kotlinx.coroutines.delay(wait + 2_000)
+        store.loadPlan()
+    }
     LaunchedEffect(Unit) { store.messages.collect { snackbar.showSnackbar(it) } }
     // An update really replaced the app: say so once.
     LaunchedEffect(Unit) {
@@ -324,17 +334,17 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
             val current = openSession
             if (showProfile) {
                 ProfileScreen(
-                    store, app.updater, app.lock, app.ads, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } },
+                    store, app.updater, app.lock, app.ads, focusPlan = focusPlan, onFocused = { focusPlan = false }, onBack = { showProfile = false }, onSignOut = { showProfile = false; scope.launch { store.signOut() } },
                     onOpenProject = { id -> showProfile = false; tab = Tab.Projects; focusProject = id },
                 )
             } else if (current != null) {
-                SessionScreen(store, current, onBack = {
+                SessionScreen(store, current, app.ads, onBack = {
                     openSession = null
                     // A natural break (back to the list): maybe an interstitial, within AdPolicy's limits.
                     context.findActivity()?.let { app.ads.onLeftSession(it, pendingRequests = approvals.count { a -> a.isPending }, locked = locked) }
                 })
             } else Column(Modifier.fillMaxSize()) {
-                TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan) {
+                TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan, planChip = { PlanChip(plan) { focusPlan = true; showProfile = true } }) {
                     ProfileButton(store, profile.account?.avatarUrl, accountName ?: accountEmail) { showProfile = true }
                 }
                 ConnectionBanner(store)
@@ -350,8 +360,8 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                 }
                 // Free plan only: an adaptive banner above the bottom navigation, on Home and Projects only.
                 when (tab) {
-                    Tab.Home -> AdBanner(app.ads, plan, AdPolicy.Placement.Home)
-                    Tab.Projects -> AdBanner(app.ads, plan, AdPolicy.Placement.Projects)
+                    Tab.Home -> AdBanner(app.ads, planView, AdPolicy.Placement.Home)
+                    Tab.Projects -> AdBanner(app.ads, planView, AdPolicy.Placement.Projects)
                     else -> Unit
                 }
             }
@@ -369,7 +379,7 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
 }
 
 @Composable
-private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: () -> Unit, profileButton: @Composable () -> Unit) {
+private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: () -> Unit, planChip: @Composable () -> Unit, profileButton: @Composable () -> Unit) {
     val projects by store.projects.collectAsState()
     val sessions by store.sessions.collectAsState()
     val approvals by store.approvals.collectAsState()
@@ -381,6 +391,7 @@ private fun TabTopBar(tab: Tab, store: BambooStore, account: String?, onScan: ()
             ScreenTopBar(
                 "BambooKit", greeting + (account?.substringBefore('@')?.let { ", $it" } ?: ""),
                 titleLeading = { Image(painterResource(R.drawable.bambookit_mark), null, Modifier.size(32.dp).clip(RoundedCornerShape(9.dp))) },
+                titleTrailing = planChip,
                 actions = { profileButton() },
             )
         }

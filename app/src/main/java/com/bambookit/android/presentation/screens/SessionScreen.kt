@@ -73,6 +73,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bambookit.android.R
+import com.bambookit.android.ads.AdsManager
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.data.ContentError
 import com.bambookit.android.data.Part
@@ -102,7 +103,8 @@ internal enum class SessionTabId(val label: String) {
  * 7-day copy of the history. The phone can Stop a running agent and answer approvals — nothing else.
  */
 @Composable
-fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
+fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack: () -> Unit) {
+    val planView by store.plan.collectAsState()
     LaunchedEffect(sessionId) { store.openSession(sessionId) }
     val detail by store.detail.collectAsState()
     val devices by store.devices.collectAsState()
@@ -209,6 +211,8 @@ fun SessionScreen(store: BambooStore, sessionId: String, onBack: () -> Unit) {
                         onSend = store::sendMessage, onDismissSendError = store::clearSendError,
                         onContinue = store::continueSession, onRetry = store::retrySession,
                         onStop = { confirmStop = true },
+                        plan = planView.plan,
+                        limitPanel = { p -> ComposerLimitPanel(store, ads, p) },
                     )
                 }
                 chatTab -> {

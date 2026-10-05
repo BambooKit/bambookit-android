@@ -728,6 +728,7 @@ class BambooStore(
             runCatching { api.sendCommand(d.sessionId, "SEND_MESSAGE", ApiClient.messagePayload(body, model)) }
                 .onSuccess { res ->
                     sendGuard.finish(true)
+                    countUsage(sessions = false)
                     track(PendingCommand(res.data.id, "SEND_MESSAGE", res.data.status, deviceOnline = res.deviceOnline))
                     val sent = SendState.Sent(android.os.SystemClock.elapsedRealtime(), res.deviceOnline)
                     _detail.update { if (it?.sessionId == d.sessionId) it.copy(sending = false, send = sent) else it }
@@ -784,6 +785,7 @@ class BambooStore(
         scope.launch {
             runCatching { api.createSession(project.id, body, model) }
                 .onSuccess { res ->
+                    countUsage(sessions = true)
                     val sentAt = android.os.SystemClock.elapsedRealtime()
                     _newSession.value = NewSessionState.Waiting(project.id, known, res.data.id, sentAt, res.deviceOnline, model)
                     if (!res.deviceOnline) _messages.tryEmit("${pcName(project.deviceId)} is offline. The session starts if it reconnects within 5 minutes.")
@@ -1230,6 +1232,27 @@ class BambooStore(
     /** One-time token for a rewarded ad's server-side verification (POST /v1/rewards/token). */
     suspend fun rewardToken(): RewardToken = api.rewardToken()
 
+    private var reconcileJob: Job? = null
+
+    /**
+     * A message or new session was accepted: today's usage goes up at once (so the remaining count is right
+     * without waiting), then the plan is re-read a moment later to reconcile with the server's count.
+     */
+    private fun countUsage(sessions: Boolean) {
+        _plan.update { v -> v.plan?.let { p -> v.copy(plan = if (sessions) p.withSessionCreated() else p.withMessageSent()) } ?: v }
+        reconcileJob?.cancel()
+        reconcileJob = scope.launch {
+            delay(PLAN_RECONCILE_MS)
+            loadPlan()
+        }
+    }
+
+    /** A locked button (daily limit used up) was tapped: the "Daily free limit reached" dialog, without an API call. */
+    fun showLocalPlanLimit(sessions: Boolean) {
+        val p = _plan.value.plan ?: return
+        _planLimit.value = p.localLimit(sessions)
+    }
+
     fun dismissPlanLimit() {
         _planLimit.value = null
     }
@@ -1548,6 +1571,9 @@ data class ClearActivityView(
     val error: String? = null,
     val errorDiagnosis: Diagnosis? = null,
 )
+
+/** The plan is re-read this long after a send / new session (optimistic usage is reconciled with the server). */
+private const val PLAN_RECONCILE_MS = 4_000L
 
 /** Re-reads of the plan after a rewarded ad (server-side verification can lag). */
 private val REWARD_REFETCH_MS = listOf(3_000L, 5_000L, 10_000L)

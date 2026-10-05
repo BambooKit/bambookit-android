@@ -1,6 +1,7 @@
 package com.bambookit.android.presentation.screens
 
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -332,6 +333,9 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusPro
     val refreshing by store.refreshing.collectAsState()
     var expanded by rememberSaveable { mutableStateOf(setOf<String>()) }
     var newIn by rememberSaveable { mutableStateOf<String?>(null) }
+    val planView by store.plan.collectAsState()
+    // Free plan with today's new sessions used up: the buttons show a lock and open the limit dialog.
+    val sessionsLocked = planView.plan?.sessionsLocked() == true
     val projectIds = projects.map { it.id }.toSet()
     val orphans = sessions.filter { it.projectId == null || it.projectId !in projectIds }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -372,7 +376,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusPro
                 val open = p.id in expanded
                 item(key = "p:" + p.id) {
                     Spacer(Modifier.height(Space.m))
-                    ProjectHeader(p, devices.firstOrNull { it.id == p.deviceId }, onNewSession = { newIn = p.id })
+                    ProjectHeader(p, devices.firstOrNull { it.id == p.deviceId }, locked = sessionsLocked, onNewSession = { if (sessionsLocked) store.showLocalPlanLimit(sessions = true) else newIn = p.id })
                     Spacer(Modifier.height(Space.s))
                     if (list.isEmpty()) Text("No sessions in this project yet.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
                 }
@@ -405,7 +409,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusPro
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ProjectHeader(p: Project, pc: Device?, onNewSession: () -> Unit) {
+private fun ProjectHeader(p: Project, pc: Device?, locked: Boolean = false, onNewSession: () -> Unit) {
     BkCard(container = BambooSurfaceElevated) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconTile(Icons.Filled.Folder, size = 34.dp)
@@ -416,7 +420,7 @@ private fun ProjectHeader(p: Project, pc: Device?, onNewSession: () -> Unit) {
             }
             Spacer(Modifier.width(Space.s))
             Button(onClick = onNewSession, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.heightIn(min = 48.dp)) {
-                Icon(Icons.Filled.Add, null, modifier = Modifier.size(16.dp))
+                Icon(if (locked) Icons.Filled.Lock else Icons.Filled.Add, if (locked) "Daily free limit reached" else null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("New session", fontSize = 13.sp)
             }

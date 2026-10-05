@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -56,6 +57,14 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
     val privacyOptionsRequired: StateFlow<Boolean> = _privacyOptionsRequired
     private val _reward = MutableStateFlow<RewardState>(RewardState.Idle)
     val reward: StateFlow<RewardState> = _reward
+    private val _diag = MutableStateFlow(AdPolicy.AdDiag())
+    /** What AdMob did last (consent, SDK, each slot): the "Ads: …" line in Profile → Plan. */
+    val diag: StateFlow<AdPolicy.AdDiag> = _diag
+
+    private fun diag(f: (AdPolicy.AdDiag) -> AdPolicy.AdDiag) = _diag.update(f)
+
+    /** The banner composable reports its AdView's state here. */
+    fun reportBanner(status: AdPolicy.SlotStatus) = diag { it.copy(banner = status) }
 
     private var gathering = false
     private var gathered = false
@@ -84,6 +93,7 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
     fun gatherConsent(activity: Activity) {
         if (gathering || gathered) return
         gathering = true
+        diag { it.copy(consent = AdPolicy.Consent.Gathering) }
         val params = ConsentRequestParameters.Builder().build()
         consent.requestConsentInfoUpdate(
             activity, params,
@@ -95,6 +105,9 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
             },
             { err ->
                 Log.w(TAG, "consent update: ${err.message}")
+                // "Publisher misconfiguration … no form(s) configured": no consent form in AdMob yet. Not fatal
+                // outside the EEA/UK (ads can still be requested); shown in the diagnostics line.
+                if (err.message?.contains("misconfiguration", ignoreCase = true) == true) diag { it.copy(consentNote = "consent form not set up in AdMob") }
                 consentGathered()
             },
         )
@@ -106,13 +119,21 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
         gathering = false
         gathered = true
         _privacyOptionsRequired.value = consent.privacyOptionsRequirementStatus == ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED
-        if (consent.canRequestAds()) startSdk()
+        val allowed = consent.canRequestAds()
+        diag { it.copy(consent = if (allowed) AdPolicy.Consent.Allowed else AdPolicy.Consent.Denied) }
+        if (allowed) startSdk()
     }
 
     /** Profile → Privacy options: Google's consent form again, to change the choice. */
     fun showPrivacyOptions(activity: Activity, onDone: (String?) -> Unit = {}) {
         UserMessagingPlatform.showPrivacyOptionsForm(activity) { err ->
-            if (consent.canRequestAds()) startSdk() else _ready.value = false
+            if (consent.canRequestAds()) {
+                diag { it.copy(consent = AdPolicy.Consent.Allowed) }
+                startSdk()
+            } else {
+                diag { it.copy(consent = AdPolicy.Consent.Denied) }
+                _ready.value = false
+            }
             onDone(err?.message)
         }
     }
@@ -123,6 +144,7 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
         scope.launch {
             // Initialisation does disk and network work: off the main thread.
             withContext(Dispatchers.IO) { MobileAds.initialize(app) {} }
+            diag { it.copy(sdkStarted = true) }
             _ready.value = true
             if (AdPolicy.adsEnabled(plan)) preloadInterstitial()
         }
@@ -142,9 +164,11 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
         // Nothing to show today: don't load one.
         if (AdPolicy.frequencyBlock(System.currentTimeMillis(), history()) == AdPolicy.Block.DailyCap) return
         interstitialLoading = true
+        diag { it.copy(interstitial = AdPolicy.SlotStatus(AdPolicy.LoadState.Loading)) }
         InterstitialAd.load(app, BuildConfig.ADMOB_INTERSTITIAL, AdRequest.Builder().build(), object : InterstitialAdLoadCallback() {
             override fun onAdLoaded(ad: InterstitialAd) {
                 interstitialLoading = false
+                diag { it.copy(interstitial = AdPolicy.SlotStatus(AdPolicy.LoadState.Loaded)) }
                 if (!AdPolicy.adsEnabled(plan)) return
                 interstitial = ad
                 interstitialLoadedAt = SystemClock.elapsedRealtime()
@@ -152,6 +176,7 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
 
             override fun onAdFailedToLoad(error: LoadAdError) {
                 interstitialLoading = false
+                diag { it.copy(interstitial = AdPolicy.SlotStatus.failed(error.code)) }
                 Log.i(TAG, "interstitial not loaded: ${error.code} ${error.message}")
             }
         })
@@ -171,11 +196,15 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
         val ad = interstitial?.takeIf { SystemClock.elapsedRealtime() - interstitialLoadedAt < AD_MAX_AGE_MS }
         interstitial = null
         if (ad == null) {
+            // No AdMob interstitial at the allowed moment: nothing is shown (no house interstitial).
             preloadInterstitial()
-            return false
+            return AdPolicy.showHouseInterstitial()
         }
         ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-            override fun onAdShowedFullScreenContent() = recordShown(System.currentTimeMillis())
+            override fun onAdShowedFullScreenContent() {
+                recordShown(System.currentTimeMillis())
+                diag { it.copy(interstitial = AdPolicy.SlotStatus(AdPolicy.LoadState.Shown)) }
+            }
             override fun onAdDismissedFullScreenContent() = preloadInterstitial()
             override fun onAdFailedToShowFullScreenContent(error: AdError) = preloadInterstitial()
         }
@@ -203,8 +232,10 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
             return
         }
         _reward.value = RewardState.Loading
+        diag { it.copy(rewarded = AdPolicy.SlotStatus(AdPolicy.LoadState.Loading)) }
         RewardedAd.load(activity, BuildConfig.ADMOB_REWARDED, AdRequest.Builder().build(), object : RewardedAdLoadCallback() {
             override fun onAdLoaded(ad: RewardedAd) {
+                diag { it.copy(rewarded = AdPolicy.SlotStatus(AdPolicy.LoadState.Loaded)) }
                 scope.launch {
                     val t = runCatching { token() }.getOrElse {
                         _reward.value = RewardState.Failed("Couldn't start the ad: ${it.message ?: "BambooKit didn't answer"}")
@@ -226,6 +257,7 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
                         }
                     }
                     _reward.value = RewardState.Showing
+                    diag { it.copy(rewarded = AdPolicy.SlotStatus(AdPolicy.LoadState.Shown)) }
                     ad.show(activity) {
                         earned = true
                         onEarned()
@@ -234,8 +266,10 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
             }
 
             override fun onAdFailedToLoad(error: LoadAdError) {
+                Log.i(TAG, "rewarded not loaded: ${error.code} ${error.message}")
+                diag { it.copy(rewarded = AdPolicy.SlotStatus.failed(error.code)) }
                 _reward.value = RewardState.Failed(
-                    if (error.code == AdRequest.ERROR_CODE_NO_FILL) "No ad is available right now. Try again later."
+                    if (error.code == AdRequest.ERROR_CODE_NO_FILL) AdPolicy.REWARD_NO_FILL_MESSAGE
                     else "The ad couldn't be loaded (${error.code}). Check your connection and try again.",
                 )
             }

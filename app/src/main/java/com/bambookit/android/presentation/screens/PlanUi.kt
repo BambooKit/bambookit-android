@@ -5,6 +5,22 @@ import android.content.Intent
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
+import com.google.android.gms.ads.AdListener
+import com.google.android.gms.ads.LoadAdError
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -95,31 +111,217 @@ fun cheapestPrice(products: List<BillingProduct>): String? {
 /** "Resets at 02:00" (local time) or null. */
 fun resetsText(resetsAt: String?): String? = parseInstant(resetsAt)?.let { "Resets at ${shortClock(it)}" }
 
+/** Price shown on the house banner: the cheapest monthly product on the website, or ₹199/mo. */
+fun houseBannerPrice(products: List<BillingProduct>): String {
+    val p = products.filter { it.amount > 0 && it.period?.startsWith("month", ignoreCase = true) == true }.minByOrNull { it.amount }
+        ?: return "₹199/mo"
+    val major = p.amount / 100.0
+    val amount = if (p.amount % 100 == 0L) "%.0f".format(major) else "%.2f".format(major)
+    val symbol = when (p.currency.uppercase()) { "INR" -> "₹"; "USD" -> "$"; "EUR" -> "€"; "GBP" -> "£"; else -> p.currency.uppercase() + " " }
+    return "$symbol$amount/mo"
+}
+
+/** "Go Pro — unlimited phone chat, 5 PCs, no ads · ₹199/mo". */
+fun houseBannerText(products: List<BillingProduct>): String = "Go Pro — unlimited phone chat, 5 PCs, no ads · ${houseBannerPrice(products)}"
+
+/** "Daily limit reached — resets at 05:30" (or "resets tomorrow" when the time is unknown). */
+fun limitReachedText(resetsAt: String?): String =
+    "Daily limit reached — " + (parseInstant(resetsAt)?.let { "resets at ${shortClock(it)}" } ?: "resets tomorrow")
+
 /**
- * Adaptive banner at the bottom of Home and Projects (above the bottom navigation). Only on the Free plan
- * (plan.ads) and after consent; on Pro nothing is created or loaded.
+ * The banner slot at the bottom of Home and Projects (above the bottom navigation), Free plan only.
+ * An AdMob adaptive banner when one loads; otherwise (no fill, an error, no consent, or nothing within
+ * [AdPolicy.HOUSE_FALLBACK_MS]) BambooKit's own "Go Pro" banner of the same height. Pro: nothing at all.
  */
 @Composable
-fun AdBanner(ads: AdsManager, plan: Plan?, placement: AdPolicy.Placement) {
+fun AdBanner(ads: AdsManager, planView: PlanView, placement: AdPolicy.Placement) {
+    val plan = planView.plan
     val ready by ads.ready.collectAsState()
-    if (!AdPolicy.bannerAllowed(plan, ready, placement)) return
+    if (plan == null || plan.isPro) return
+    val context = LocalContext.current
+    var timedOut by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(AdPolicy.HOUSE_FALLBACK_MS)
+        timedOut = true
+    }
+    val useAdMob = AdPolicy.bannerAllowed(plan, ready, placement)
     Column(Modifier.fillMaxWidth().background(BambooSurface)) {
         HorizontalDivider(color = BambooBorder)
         BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             val width = maxWidth.value.toInt()
-            val context = LocalContext.current
-            val view = remember(width) {
-                AdView(context).apply {
-                    setAdSize(AdSize.getLargeAnchoredAdaptiveBannerAdSize(context, width))
+            val adSize = remember(width) { AdSize.getLargeAnchoredAdaptiveBannerAdSize(context, width) }
+            val height = adSize.height.coerceAtLeast(50).dp
+            var loaded by remember(width, useAdMob) { mutableStateOf(false) }
+            var failures by remember(width, useAdMob) { mutableIntStateOf(0) }
+            val view = remember(width, useAdMob) {
+                if (!useAdMob) null else AdView(context).apply {
+                    setAdSize(adSize)
                     adUnitId = BuildConfig.ADMOB_BANNER
+                    adListener = object : AdListener() {
+                        override fun onAdLoaded() {
+                            loaded = true
+                            ads.reportBanner(AdPolicy.SlotStatus(AdPolicy.LoadState.Loaded))
+                        }
+
+                        override fun onAdImpression() = ads.reportBanner(AdPolicy.SlotStatus(AdPolicy.LoadState.Shown))
+
+                        override fun onAdFailedToLoad(error: LoadAdError) {
+                            android.util.Log.i("BambooAds", "banner not loaded: ${error.code} ${error.message}")
+                            if (!loaded) failures++
+                            ads.reportBanner(AdPolicy.SlotStatus.failed(error.code))
+                        }
+                    }
+                    ads.reportBanner(AdPolicy.SlotStatus(AdPolicy.LoadState.Loading))
                     loadAd(AdRequest.Builder().build())
                 }
             }
-            DisposableEffect(view) { onDispose { view.destroy() } }
-            AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth())
+            // No fill: try AdMob again now and then while the house banner is shown.
+            LaunchedEffect(view, failures) {
+                if (view != null && failures in 1..BANNER_RETRIES) {
+                    delay(BANNER_RETRY_MS)
+                    view.loadAd(AdRequest.Builder().build())
+                }
+            }
+            DisposableEffect(view) { onDispose { view?.destroy() } }
+            val slot = AdPolicy.bannerSlot(
+                plan, placement, ready, admobLoaded = loaded, admobFailed = failures > 0,
+                elapsedMs = if (timedOut) AdPolicy.HOUSE_FALLBACK_MS else 0L,
+            )
+            Box(Modifier.fillMaxWidth().height(height), contentAlignment = Alignment.Center) {
+                // The AdView stays attached while it loads; the house banner covers the slot only while it has no ad.
+                if (view != null) AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth())
+                if (slot == AdPolicy.BannerSlot.House) HouseBanner(planView.products, Modifier.fillMaxSize())
+            }
         }
     }
 }
+
+/** BambooKit's own banner (no tracking, not an AdMob ad): promotes Pro and opens the pricing page. */
+@Composable
+fun HouseBanner(products: List<BillingProduct>, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    Row(
+        modifier.background(BambooSurface).clickable { openPricing(context) }.padding(horizontal = Space.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconTile(Icons.Filled.WorkspacePremium, tint = StatusSuccess, background = StatusSuccessTint, size = 34.dp)
+        Spacer(Modifier.width(Space.m))
+        Column(Modifier.weight(1f)) {
+            Text(houseBannerText(products), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("BambooKit Pro · bought on the website", color = TextMuted, fontSize = 11.sp, maxLines = 1)
+        }
+        Spacer(Modifier.width(Space.s))
+        Button(onClick = { openPricing(context) }, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Go Pro", fontSize = 13.sp) }
+    }
+}
+
+/** The plan next to the title on Home: "Free" (tap → Profile → Plan) or a small "Pro" badge. */
+@Composable
+fun PlanChip(plan: Plan?, onClick: () -> Unit) {
+    if (plan == null) return
+    Box(Modifier.clip(ChipShape).clickable(onClick = onClick)) {
+        if (plan.isPro) Chip("Pro", StatusSuccess, StatusSuccessTint, icon = Icons.Filled.WorkspacePremium)
+        else Chip("Free", StatusWarning, StatusWarningTint)
+    }
+}
+
+/** Starts the rewarded ad (24 h of Pro). */
+fun watchReward(context: Context, store: BambooStore, ads: AdsManager) {
+    val activity = context.findActivity() ?: return
+    ads.clearReward()
+    ads.watchRewarded(activity, token = { store.rewardToken() }, onEarned = { store.refreshPlanAfterReward() })
+}
+
+/** Rewarded-ad failure (with Retry) or "earned" under a "Watch ad" button. */
+@Composable
+private fun RewardStatus(state: RewardState, onRetry: () -> Unit, onClose: () -> Unit) {
+    when (state) {
+        is RewardState.Failed -> Column(Modifier.fillMaxWidth().padding(top = Space.s)) {
+            Text(state.message, color = StatusFailed, fontSize = 12.sp, lineHeight = 16.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onClose) { Text("Close") }
+                TextButton(onClick = onRetry) { Text("Retry") }
+            }
+        }
+        RewardState.Earned -> Text("Thanks! Pro turns on in a few seconds.", color = StatusSuccess, fontSize = 12.sp, modifier = Modifier.padding(top = Space.s))
+        else -> Unit
+    }
+}
+
+/**
+ * Chat composer on the Free plan with today's messages used up: input locked until the reset, with
+ * "Watch ad (24 h Pro)" and "Upgrade".
+ */
+@Composable
+fun ComposerLimitPanel(store: BambooStore, ads: AdsManager, plan: Plan) {
+    val context = LocalContext.current
+    val state by ads.reward.collectAsState()
+    val busy = state == RewardState.Loading || state == RewardState.Showing
+    Column(Modifier.fillMaxWidth().padding(bottom = Space.s)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Lock, null, tint = StatusWarning, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(Space.s))
+            Text(limitReachedText(plan.resetsAt), color = StatusWarning, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        }
+        Text(
+            "You've sent all ${plan.limits.phoneMessagesPerDay ?: 0} free messages from the phone today. You can still chat on the PC.",
+            color = TextSecondary, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = Space.xs),
+        )
+        RewardStatus(state, onRetry = { watchReward(context, store, ads) }, onClose = { ads.clearReward() })
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.fillMaxWidth().padding(top = Space.s)) {
+            if (plan.canWatchReward) OutlinedButton(onClick = { watchReward(context, store, ads) }, enabled = !busy, modifier = Modifier.weight(1f)) {
+                if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Filled.OndemandVideo, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Watch ad (${plan.rewards.hours} h Pro)", fontSize = 13.sp, maxLines = 1)
+            }
+            Button(onClick = { openPricing(context) }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.WorkspacePremium, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Upgrade", fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+/** "N of 20 free messages left today" (warning color at 3 or fewer). Nothing when [text] is null. */
+@Composable
+fun QuotaLine(text: String?, warn: Boolean, modifier: Modifier = Modifier) {
+    if (text == null) return
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.WorkspacePremium, null, tint = if (warn) StatusWarning else TextMuted, modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(text, color = if (warn) StatusWarning else TextMuted, fontSize = 11.sp, fontWeight = if (warn) FontWeight.Medium else FontWeight.Normal)
+    }
+}
+
+/** What Pro adds; on the Free plan each item has a lock. */
+@Composable
+private fun ProFeatures(plan: Plan) {
+    val free = plan.limits
+    val items = listOf(
+        "Unlimited phone chat" to free.phoneMessagesPerDay?.let { "Free: $it a day" },
+        "Unlimited new sessions from phone" to free.phoneSessionsPerDay?.let { "Free: $it a day" },
+        "Up to 5 PCs" to "Free: ${if (free.desktops > 0) free.desktops else 1} PC",
+        "No ads" to "Free: with ads",
+    )
+    Text(if (plan.isPro) "INCLUDED WITH PRO" else "WHAT YOU GET WITH PRO", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+    Spacer(Modifier.height(Space.xs))
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for ((label, freeNote) in items) Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (plan.isPro) Icons.Filled.Check else Icons.Filled.Lock, if (plan.isPro) "Included" else "Pro only",
+                tint = if (plan.isPro) StatusSuccess else StatusWarning, modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(Space.s))
+            Text(label, color = TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            if (!plan.isPro && freeNote != null) Text(freeNote, color = TextMuted, fontSize = 11.sp)
+        }
+    }
+}
+
+private const val BANNER_RETRY_MS = 60_000L
+private const val BANNER_RETRIES = 5
 
 @Composable
 private fun UsageBar(label: String, used: Int, max: Int?) {
@@ -185,6 +387,8 @@ fun PlanSection(store: BambooStore, ads: AdsManager, view: PlanView) {
                 UsageBar("New sessions from the phone", plan.usage.phoneSessionsToday, plan.limits.phoneSessionsPerDay)
             }
             resetsText(plan.resetsAt)?.let { Text(it, color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = Space.xs)) }
+            Spacer(Modifier.height(Space.m))
+            ProFeatures(plan)
             if (!plan.isPro) {
                 Spacer(Modifier.height(Space.m))
                 Button(onClick = { openPricing(context) }, modifier = Modifier.fillMaxWidth()) {
@@ -202,6 +406,17 @@ fun PlanSection(store: BambooStore, ads: AdsManager, view: PlanView) {
     if (plan != null && !plan.isPro && plan.ads) {
         Spacer(Modifier.height(Space.s))
         RewardedAdCard(store, ads, plan)
+    }
+    // Diagnostics for the owner: what AdMob did, and a manual re-read of the plan.
+    val adDiag by ads.diag.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = Space.s)) {
+        Text(AdPolicy.describe(plan, adDiag), color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.weight(1f))
+        TextButton(onClick = { store.loadPlan() }, enabled = !view.loading) {
+            if (view.loading) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Filled.Refresh, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Refresh plan", fontSize = 12.sp)
+        }
     }
     if (plan != null && !plan.isPro) Text(
         "The Free plan shows ads from Google AdMob on Home and Projects and occasionally between sessions. " +
@@ -231,10 +446,7 @@ fun RewardedAdCard(store: BambooStore, ads: AdsManager, plan: Plan, compact: Boo
     val hours = plan.rewards.hours
     val left = plan.rewardsLeft
     val busy = state == RewardState.Loading || state == RewardState.Showing
-    fun watch() {
-        val activity = context.findActivity() ?: return
-        ads.watchRewarded(activity, token = { store.rewardToken() }, onEarned = { store.refreshPlanAfterReward() })
-    }
+    fun watch() = watchReward(context, store, ads)
     val content: @Composable () -> Unit = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconTile(Icons.Filled.OndemandVideo, tint = StatusRunning)
@@ -250,18 +462,9 @@ fun RewardedAdCard(store: BambooStore, ads: AdsManager, plan: Plan, compact: Boo
                 )
             }
         }
-        when (val st = state) {
-            is RewardState.Failed -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Space.s)) {
-                Text(st.message, color = StatusFailed, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.weight(1f))
-                TextButton(onClick = { ads.clearReward() }) { Text("Close") }
-            }
-            RewardState.Earned -> Text(
-                "Thanks! Pro turns on in a few seconds.", color = StatusSuccess, fontSize = 12.sp, modifier = Modifier.padding(top = Space.s),
-            )
-            else -> Unit
-        }
+        RewardStatus(state, onRetry = { watch() }, onClose = { ads.clearReward() })
         Spacer(Modifier.height(Space.s))
-        OutlinedButton(onClick = { ads.clearReward(); watch() }, enabled = left > 0 && !busy, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { watch() }, enabled = left > 0 && !busy, modifier = Modifier.fillMaxWidth()) {
             if (busy) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(Space.s))

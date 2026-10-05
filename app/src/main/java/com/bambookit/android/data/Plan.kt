@@ -52,6 +52,60 @@ data class Plan(
     /** Rewarded ads that can still be watched today. */
     val rewardsLeft get() = (rewards.maxPerDay - rewards.todayCount).coerceAtLeast(0)
     val canWatchReward get() = !isPro && ads && rewardsLeft > 0
+
+    /** The day's counters were reset: [resetsAt] is in the past at [nowMs] (the plan is then re-read). */
+    fun resetDue(nowMs: Long): Boolean = resetsAtMs()?.let { nowMs >= it } ?: false
+
+    fun resetsAtMs(): Long? = resetsAt?.let { v ->
+        runCatching { java.time.Instant.parse(v).toEpochMilli() }.getOrNull()
+            ?: runCatching { java.time.OffsetDateTime.parse(v).toInstant().toEpochMilli() }.getOrNull()
+    }
+
+    /** Phone messages left today (null = unlimited). After the reset time the full limit is assumed until re-read. */
+    fun messagesLeft(nowMs: Long = System.currentTimeMillis()): Int? =
+        Quota.left(limits.phoneMessagesPerDay, usage.phoneMessagesToday, isPro, resetDue(nowMs))
+
+    /** New sessions from the phone left today (null = unlimited). */
+    fun sessionsLeft(nowMs: Long = System.currentTimeMillis()): Int? =
+        Quota.left(limits.phoneSessionsPerDay, usage.phoneSessionsToday, isPro, resetDue(nowMs))
+
+    /** Sending from the phone is locked until the reset (Free plan, daily messages used up). */
+    fun messagesLocked(nowMs: Long = System.currentTimeMillis()): Boolean = messagesLeft(nowMs) == 0
+    fun sessionsLocked(nowMs: Long = System.currentTimeMillis()): Boolean = sessionsLeft(nowMs) == 0
+
+    /** Optimistic usage after a message the API accepted (reconciled with GET /v1/me/plan and plan.updated). */
+    fun withMessageSent(): Plan = copy(usage = usage.copy(phoneMessagesToday = usage.phoneMessagesToday + 1))
+    fun withSessionCreated(): Plan = copy(usage = usage.copy(phoneSessionsToday = usage.phoneSessionsToday + 1))
+
+    /** A local PLAN_LIMIT (the dialog) for a locked button, without asking the API first. */
+    fun localLimit(sessions: Boolean): PlanLimitError {
+        val max = if (sessions) limits.phoneSessionsPerDay else limits.phoneMessagesPerDay
+        val used = if (sessions) usage.phoneSessionsToday else usage.phoneMessagesToday
+        return PlanLimitError(
+            "Daily free limit reached", if (sessions) "phoneSessionsPerDay" else "phoneMessagesPerDay", max, if (max != null) used.coerceAtMost(max) else used, resetsAt,
+        )
+    }
+}
+
+/** Remaining-count rules shared by the composer, the new-session buttons and Profile. Pure (unit tested). */
+object Quota {
+    /** At or below this many left, the count is shown in the warning color. */
+    const val WARN_AT = 3
+
+    /** Left of [limit] after [used] (never negative); null = unlimited (Pro, or no limit on this plan). */
+    fun left(limit: Int?, used: Int, pro: Boolean, resetDue: Boolean = false): Int? = when {
+        pro || limit == null -> null
+        resetDue -> limit
+        else -> (limit - used).coerceAtLeast(0)
+    }
+
+    fun warn(left: Int?): Boolean = left != null && left <= WARN_AT
+
+    /** "5 of 20 free messages left today". */
+    fun messagesText(left: Int, limit: Int): String = "$left of $limit free ${if (limit == 1) "message" else "messages"} left today"
+
+    /** "2 of 3 free new sessions left today". */
+    fun sessionsText(left: Int, limit: Int): String = "$left of $limit free new ${if (limit == 1) "session" else "sessions"} left today"
 }
 
 /** One Pro product on the website (GET /v1/billing/plans). */

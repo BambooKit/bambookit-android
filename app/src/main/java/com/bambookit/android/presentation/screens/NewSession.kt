@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Lock
+import com.bambookit.android.data.Quota
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -75,6 +77,10 @@ internal fun NewSessionSheet(store: BambooStore, project: Project, onOpenSession
         }
     }
     val busy = state == NewSessionState.Sending || state is NewSessionState.Waiting
+    val plan = store.plan.collectAsState().value.plan
+    val sessionsLeft = plan?.sessionsLeft()
+    val sessionsLimit = plan?.limits?.phoneSessionsPerDay
+    val locked = plan != null && sessionsLeft == 0 && !busy
     ModalBottomSheet(
         onDismissRequest = { if (!busy) { store.clearNewSession(); onDismiss() } },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -121,15 +127,20 @@ internal fun NewSessionSheet(store: BambooStore, project: Project, onOpenSession
                 }
                 else -> Unit
             }
+            if (sessionsLeft != null && sessionsLimit != null) QuotaLine(
+                if (locked) "No free new sessions left today — ${limitReachedText(plan.resetsAt).substringAfter("— ")}" else Quota.sessionsText(sessionsLeft, sessionsLimit),
+                warn = Quota.warn(sessionsLeft), modifier = Modifier.padding(top = Space.s),
+            )
             Row(Modifier.fillMaxWidth().padding(top = Space.s), verticalAlignment = Alignment.CenterVertically) {
                 Text("Runs in ${project.directory}", color = TextMuted, fontSize = 11.sp, maxLines = 2, modifier = Modifier.weight(1f))
                 TextButton(onClick = { store.clearNewSession(); onDismiss() }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
                 Button(
-                    onClick = { store.startSession(project, text, model) },
-                    enabled = text.isNotBlank() && !busy,
+                    onClick = { if (locked) store.showLocalPlanLimit(sessions = true) else store.startSession(project, text, model) },
+                    enabled = (text.isNotBlank() || locked) && !busy,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
                     if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    else if (locked) Icon(Icons.Filled.Lock, "Daily free limit reached", modifier = Modifier.size(16.dp))
                     else Icon(Icons.AutoMirrored.Filled.Send, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(if (state is NewSessionState.Failed) "Try again" else "Start")
