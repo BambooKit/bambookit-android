@@ -1482,7 +1482,7 @@ class BambooStore(
                 }
                 "achievement.unlocked" -> {
                     val a = runCatching { json.decodeFromJsonElement<AchievementEvent>(event.payload) }.getOrNull()
-                    a?.title?.takeIf { it.isNotBlank() }?.let { _messages.tryEmit("Achievement unlocked: $it") }
+                    a?.let { StatsFormat.eventMessage(it) }?.let { _messages.tryEmit(it) }
                     if (_stats.value.stats != null || _stats.value.loading) loadStats()
                 }
                 "device.status", "device.registered", "device.updated", "device.revoked", "device.unlinked", "pairing.completed" -> scope.launch {

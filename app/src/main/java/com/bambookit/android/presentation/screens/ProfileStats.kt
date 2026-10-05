@@ -42,6 +42,25 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bambookit.android.data.Achievement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.bambookit.android.data.AchievementSummary
+import com.bambookit.android.presentation.theme.BambooBorderStrong
+import com.bambookit.android.presentation.theme.BambooGreenSubtle
+import com.bambookit.android.presentation.theme.BambooSurface
+import com.bambookit.android.presentation.theme.TierBronze
+import com.bambookit.android.presentation.theme.TierDiamond
+import com.bambookit.android.presentation.theme.TierGold
+import com.bambookit.android.presentation.theme.TierLocked
+import com.bambookit.android.presentation.theme.TierPlatinum
+import com.bambookit.android.presentation.theme.TierSilver
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.data.Project
 import com.bambookit.android.data.ProjectStat
@@ -82,7 +101,10 @@ private fun recent(iso: String?): Boolean = runCatching { Duration.between(Insta
  * GET /v1/me/stats only (0 when there is nothing yet). Projects managed are shown separately, at the bottom
  * of the screen ([profileProjects]).
  */
-fun LazyListScope.profileStats(view: StatsView, store: BambooStore) {
+fun LazyListScope.profileStats(
+    view: StatsView, store: BambooStore,
+    filter: StatsFormat.Filter = StatsFormat.Filter.All, onFilter: (StatsFormat.Filter) -> Unit = {},
+) {
     val st = view.stats
     val err = view.error
     if (st == null) {
@@ -159,11 +181,21 @@ fun LazyListScope.profileStats(view: StatsView, store: BambooStore) {
     }
 
     // ---- achievements
+    val summary = StatsFormat.summaryOf(st.achievements, st.achievementSummary)
+    val fromServer = st.achievementSummary != null
     item {
-        SectionTitle("Achievements", trailing = { Text(StatsFormat.unlockedSummary(st.achievements), color = TextMuted, fontSize = 11.sp) })
+        SectionTitle("Achievements", trailing = {
+            if (fromServer) Text(StatsFormat.pointsText(summary.points), color = StatusWarning, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            else Text(StatsFormat.unlockedSummary(st.achievements), color = TextMuted, fontSize = 11.sp)
+        })
         if (st.achievements.isEmpty()) Text("No achievements yet.", color = TextSecondary, fontSize = 13.sp)
+        else AchievementHeader(summary, fromServer, st.achievements, filter, onFilter)
     }
-    items(st.achievements.sortedWith(compareByDescending<Achievement> { it.unlocked }.thenByDescending { StatsFormat.fraction(it) }), key = { "a:" + it.id }) { a ->
+    val shown = StatsFormat.sorted(st.achievements).filter { StatsFormat.matches(it, filter) }
+    if (st.achievements.isNotEmpty() && shown.isEmpty()) item {
+        Text("No achievements here yet.", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = Space.s))
+    }
+    items(shown, key = { "a:" + it.id }) { a ->
         AchievementRow(a)
         Spacer(Modifier.height(Space.s))
     }
@@ -300,12 +332,80 @@ private fun ProjectStatRow(p: ProjectStat, saving: Boolean, onStatus: (String) -
 @Composable
 private fun Meta(text: String) = Text(text, color = TextSecondary, fontSize = 12.sp)
 
+/** "23 of 50 · 61/250 tiers · 🔥 4-day streak (best 12)" and the filter chips with their counts. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AchievementHeader(
+    summary: AchievementSummary, fromServer: Boolean, list: List<Achievement>,
+    filter: StatsFormat.Filter, onFilter: (StatsFormat.Filter) -> Unit,
+) {
+    BkCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("🏆", fontSize = 22.sp)
+            Spacer(Modifier.width(Space.m))
+            Column(Modifier.weight(1f)) {
+                Text(StatsFormat.summaryLine(summary, fromServer), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, lineHeight = 18.sp)
+                if (fromServer) Text(
+                    "${StatsFormat.pointsText(summary.points)} · Bronze 1, Silver 2, Gold 3, Platinum 4, Diamond 5",
+                    color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp,
+                )
+            }
+        }
+    }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(top = Space.s, bottom = Space.xs)) {
+        for (f in StatsFormat.Filter.entries) {
+            val n = list.count { StatsFormat.matches(it, f) }
+            if (f == StatsFormat.Filter.NotTracked && n == 0) continue
+            FilterChip(
+                selected = filter == f, onClick = { onFilter(f) }, label = { Text("${f.label} $n", fontSize = 12.sp, maxLines = 1) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = BambooGreenSubtle, selectedLabelColor = TextPrimary,
+                    containerColor = BambooSurface, labelColor = TextSecondary,
+                ),
+                border = FilterChipDefaults.filterChipBorder(enabled = true, selected = filter == f, borderColor = BambooBorder, selectedBorderColor = BambooBorderStrong),
+            )
+        }
+    }
+}
+
+private fun tierColor(tier: String?): Color = when (tier?.lowercase()) {
+    "bronze" -> TierBronze
+    "silver" -> TierSilver
+    "gold" -> TierGold
+    "platinum" -> TierPlatinum
+    "diamond" -> TierDiamond
+    else -> TierLocked
+}
+
+/** Five dots, one per tier, filled in the tier's color when unlocked. */
+@Composable
+private fun TierDots(a: Achievement) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        for (t in a.tiers) {
+            val on = t.unlocked
+            Box(
+                Modifier.size(8.dp).clip(CircleShape)
+                    .background(if (on) tierColor(t.name) else TierLocked.copy(alpha = 0.5f))
+                    .semantics { contentDescription = "${StatsFormat.tierLabel(t.name)} ${if (on) "unlocked" else "locked"}" },
+            )
+        }
+    }
+}
+
 @Composable
 private fun AchievementRow(a: Achievement) {
-    val fraction = StatsFormat.fraction(a)
+    val tiered = StatsFormat.isTiered(a)
+    val fraction = StatsFormat.tierFraction(a)
+    val medal = StatsFormat.medal(a.tier)
+    val dim = !a.trackable
     BkCard(border = if (a.unlocked) com.bambookit.android.presentation.theme.AchievementUnlockedBorder else BambooBorder) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconTile(
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.alpha(if (dim) 0.55f else 1f)) {
+            val emoji = a.emoji
+            if (emoji != null) Box(
+                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(if (a.unlocked) StatusWarningTint else NeutralTint),
+                contentAlignment = Alignment.Center,
+            ) { Text(emoji, fontSize = 18.sp) }
+            else IconTile(
                 if (a.unlocked) Icons.Filled.EmojiEvents else Icons.Filled.Lock,
                 tint = if (a.unlocked) StatusWarning else TextMuted,
                 background = if (a.unlocked) StatusWarningTint else NeutralTint,
@@ -313,20 +413,36 @@ private fun AchievementRow(a: Achievement) {
             )
             Spacer(Modifier.width(Space.m))
             Column(Modifier.weight(1f)) {
-                Text(a.title, color = TextPrimary, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(a.title, color = TextPrimary, fontWeight = FontWeight.Medium, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (tiered && medal != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(medal, fontSize = 14.sp, modifier = Modifier.semantics { contentDescription = StatsFormat.tierLabel(a.tier) })
+                        Spacer(Modifier.width(4.dp))
+                        Text(StatsFormat.tierLabel(a.tier), color = tierColor(a.tier), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
                 Text(a.description, color = TextSecondary, fontSize = 12.sp, lineHeight = 16.sp)
             }
         }
         Spacer(Modifier.height(Space.s))
+        if (dim) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Lock, null, tint = TextMuted, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(StatsFormat.tierProgress(a), color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp)
+            }
+            return@BkCard
+        }
         LinearProgressIndicator(
             progress = { fraction }, modifier = Modifier.fillMaxWidth(),
-            color = if (a.unlocked) StatusSuccess else BambooGreen, trackColor = BambooBorder,
+            color = if (tiered) (if (a.nextTier == null) tierColor(a.tier) else tierColor(a.nextTier)) else if (a.unlocked) StatusSuccess else BambooGreen,
+            trackColor = BambooBorder,
         )
         Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(StatsFormat.progress(a), color = TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            if (a.unlocked) {
-                Text("✓ Unlocked${dateOnly(a.unlockedAt)?.let { " $it" } ?: ""}", color = StatusSuccess, fontSize = 11.sp)
-            }
+            Text(StatsFormat.tierProgress(a), color = TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            if (tiered) TierDots(a)
+            else if (a.unlocked) Text("✓ Unlocked${dateOnly(a.unlockedAt)?.let { " $it" } ?: ""}", color = StatusSuccess, fontSize = 11.sp)
         }
     }
 }

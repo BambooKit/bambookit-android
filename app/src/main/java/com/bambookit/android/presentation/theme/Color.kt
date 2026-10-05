@@ -98,4 +98,11 @@ val SearchMatchCurrent = StatusWarning.copy(alpha = 0.62f)
 
 // Profile statistics, achievements and the "Update BambooKit Desktop" card.
 val AchievementUnlockedBorder = StatusSuccess.copy(alpha = 0.45f)
+// Achievement tiers (medals and tier dots).
+val TierBronze = Color(0xFFCD8B5A)
+val TierSilver = Color(0xFFC0C6CC)
+val TierGold = Color(0xFFE8C26A)
+val TierPlatinum = Color(0xFF8FD3E0)
+val TierDiamond = Color(0xFFB9A4F0)
+val TierLocked = BambooBorderStrong
 val DesktopUpdateBorder = StatusWarning.copy(alpha = 0.5f)

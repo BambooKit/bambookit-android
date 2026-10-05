@@ -493,6 +493,20 @@ data class CodeStats(
     val deployments: Long = 0,
 )
 
+/** One tier of a tiered achievement: bronze, silver, gold, platinum or diamond. */
+@Serializable
+data class AchievementTier(
+    val name: String = "",
+    val threshold: Double = 0.0,
+    val unlocked: Boolean = false,
+    val unlockedAt: String? = null,
+)
+
+/**
+ * An achievement. Older servers send only title, description, progress, target, unit ("count" or "ms"), unlocked
+ * and unlockedAt; tiered ones (API with 50 achievements) add emoji, value, tiers, tier (current), nextTier,
+ * trackable and, for untrackable ones, the reason. Everything has a default so either shape decodes.
+ */
 @Serializable
 data class Achievement(
     val id: String,
@@ -500,10 +514,32 @@ data class Achievement(
     val description: String = "",
     val progress: Double = 0.0,
     val target: Double = 1.0,
-    /** "count" or "ms". */
+    /** "count" or "ms" (older servers); "lines", "hours", "days", "nights", "files", … for tiered achievements. */
     val unit: String = "count",
     val unlocked: Boolean = false,
     val unlockedAt: String? = null,
+    val emoji: String? = null,
+    val trackable: Boolean = true,
+    /** Why an achievement can't be tracked yet (trackable = false). */
+    val reason: String? = null,
+    val value: Double? = null,
+    val tiers: List<AchievementTier> = emptyList(),
+    /** The highest tier reached, or null. */
+    val tier: String? = null,
+    /** The next tier to reach, or null once all are reached. */
+    val nextTier: String? = null,
+)
+
+/** GET /v1/me/achievements `summary` and /v1/me/stats `achievementSummary`. */
+@Serializable
+data class AchievementSummary(
+    val unlocked: Int = 0,
+    val total: Int = 0,
+    val tiersUnlocked: Int = 0,
+    val tiersTotal: Int = 0,
+    val points: Int = 0,
+    val currentStreak: Int = 0,
+    val longestStreak: Int = 0,
 )
 
 @Serializable
@@ -518,11 +554,20 @@ data class ProfileStats(
     /** Plain-text rules for how coding time, files and night hours are counted. */
     val rules: Map<String, String> = emptyMap(),
     val achievements: List<Achievement> = emptyList(),
+    /** Tiered achievements' totals (newer servers only). */
+    val achievementSummary: AchievementSummary? = null,
 )
 
 @Serializable data class ProjectStatusResult(val id: String, val status: String)
 
-@Serializable data class AchievementEvent(val id: String = "", val title: String = "", val unlockedAt: String? = null)
+/** The achievement.unlocked event: one tier ([tier]) or, when many unlock at once, a summary (id "summary", [count]). */
+@Serializable data class AchievementEvent(
+    val id: String = "",
+    val title: String = "",
+    val unlockedAt: String? = null,
+    val tier: String? = null,
+    val count: Int? = null,
+)
 
 /** GET /v1/meta (public). */
 @Serializable data class ApiMeta(val apiVersion: String? = null, val protocol: Int? = null)

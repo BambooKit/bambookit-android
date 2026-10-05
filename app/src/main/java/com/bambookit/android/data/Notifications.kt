@@ -149,7 +149,7 @@ class BambooNotifier(private val context: Context) {
         val pending = PendingIntent.getActivity(context, n.id.hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val builder = NotificationCompat.Builder(context, if (kind == NotifyKind.Request) CHANNEL_REQUESTS else CHANNEL_SESSIONS)
             .setSmallIcon(R.drawable.bambookit_mark)
-            .setContentTitle(brand(n.title))
+            .setContentTitle(brand(StatsFormat.notificationTitle(n.type, n.title, n.data)))
             .setContentText(brand(n.body))
             .setStyle(NotificationCompat.BigTextStyle().bigText(brand(n.body)))
             .setAutoCancel(true)

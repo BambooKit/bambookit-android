@@ -195,6 +195,7 @@ fun ProfileScreen(
     val planView by store.plan.collectAsState()
     val projects by store.projects.collectAsState()
     var showUpdates by remember { mutableStateOf(false) }
+    var achievementFilter by rememberSaveable { mutableStateOf(com.bambookit.android.data.StatsFormat.Filter.All) }
     val session by store.session.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -307,7 +308,7 @@ fun ProfileScreen(
                         }
                     }
                     ProfileSection.Statistics -> {
-                        profileStats(stats, store)
+                        profileStats(stats, store, achievementFilter) { achievementFilter = it }
                     }
                     ProfileSection.Plan -> {
                         item(key = PLAN_ITEM_KEY) { PlanSection(store, ads, planView) }
