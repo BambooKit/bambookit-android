@@ -1,5 +1,6 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.ads.AdPlacements
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -52,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -229,7 +231,7 @@ fun ProfileScreen(
             "Profile", account?.email ?: session?.email,
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
         )
-        RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats(); store.loadPlan() }) {
+        RefreshBox(refreshing = profile.loading && account != null, onRefresh = { store.loadProfile(); store.loadStats(); store.loadPlan() }, modifier = Modifier.weight(1f)) {
             val listState = androidx.compose.foundation.lazy.rememberLazyListState()
             // Opened from the plan chip on Home: scroll down until the plan section is laid out, then to it.
             LaunchedEffect(focusPlan) {
@@ -408,6 +410,8 @@ fun ProfileScreen(
                 item { BottomSpacer() }
             }
         }
+        // Free plan: a banner at the bottom, under the scrolling profile (no buttons fixed there).
+        ScreenAd(AdPlacements.Screen.Profile, AdPlacements.Position.Bottom, hasContent = account != null)
     }
 
     if (confirmSignOut) {

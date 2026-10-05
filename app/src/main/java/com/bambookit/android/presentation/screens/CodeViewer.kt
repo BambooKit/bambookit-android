@@ -1,5 +1,6 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.ads.AdPlacements
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -311,6 +312,8 @@ fun CodeViewer(view: FileView, pcTitle: String, onClose: () -> Unit, onRetry: ()
                 },
             )
             HorizontalDivider(color = BambooBorder)
+            // Free plan: a banner under the header, only once the file is shown (not while loading or on an error).
+            ScreenAd(AdPlacements.Screen.FileViewer, AdPlacements.Position.Top, hasContent = !view.loading && view.error == null && content != null)
 
             when {
                 view.loading -> LoadingState("Opening the file on $pcTitle…")

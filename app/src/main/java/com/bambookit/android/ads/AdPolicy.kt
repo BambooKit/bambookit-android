@@ -6,10 +6,10 @@ import com.bambookit.android.data.Plan
  * When ads may be shown. Pure functions (unit tested): the SDK is only touched by [AdsManager].
  *
  * - Ads only when the server says so (plan.ads, the Free plan). Pro: nothing is loaded at all.
- * - Banners only on Home and Projects.
- * - Interstitials only when leaving a session back to the list, at most once every 15 minutes and 4 times a
- *   day, never while an approval or question is waiting, never while App lock is shown, and never right after
- *   the app started.
+ * - Banners where [AdPlacements] allows them (never on sign-in, App lock, pairing, request answers, PLAN_LIMIT).
+ * - Interstitials only at the natural breaks in [AdPlacements.Transition] (leaving a session, leaving the file or
+ *   diff viewer, Projects → Home), all sharing one cap: at most once every 15 minutes and 4 times a day, never
+ *   while an approval or question is waiting, never while App lock is shown, and never right after the app started.
  */
 object AdPolicy {
     const val INTERSTITIAL_MIN_INTERVAL_MS = 15 * 60_000L
@@ -18,17 +18,14 @@ object AdPolicy {
     /** No interstitial in the first minute after the app started. */
     const val APP_START_QUIET_MS = 60_000L
 
-    /** Where a banner may appear. */
-    enum class Placement { Home, Projects }
-
     /** Ads (and any ad loading) are allowed only on a plan the server marks with ads = true, and never on Pro. */
     fun adsEnabled(plan: Plan?): Boolean = plan != null && plan.ads && !plan.isPro
 
-    fun bannerAllowed(plan: Plan?, canRequestAds: Boolean, placement: Placement?): Boolean =
-        placement != null && canRequestAds && adsEnabled(plan)
+    fun bannerAllowed(plan: Plan?, canRequestAds: Boolean, placement: AdPlacements.Screen?): Boolean =
+        placement != null && AdPlacements.configOf(placement) != null && canRequestAds && adsEnabled(plan)
 
     /** Why an interstitial is not shown (null = it may be shown). */
-    enum class Block { NoAds, NoConsent, RequestPending, Locked, AppJustStarted, TooSoon, DailyCap }
+    enum class Block { NoAds, PlacementOff, NoConsent, RequestPending, Locked, AppJustStarted, TooSoon, DailyCap }
 
     data class InterstitialContext(
         val plan: Plan?,
@@ -41,10 +38,13 @@ object AdPolicy {
         /** Wall-clock now and earlier interstitials (epoch ms). */
         val now: Long,
         val shownAt: List<Long>,
+        /** Where it would be shown. */
+        val transition: AdPlacements.Transition = AdPlacements.Transition.LeftSession,
     )
 
     fun interstitialBlock(c: InterstitialContext): Block? = when {
         !adsEnabled(c.plan) -> Block.NoAds
+        !AdPlacements.interstitialEnabled(c.transition) -> Block.PlacementOff
         !c.canRequestAds -> Block.NoConsent
         c.pendingRequests > 0 -> Block.RequestPending
         c.locked -> Block.Locked
@@ -95,10 +95,10 @@ object AdPolicy {
      * shown even when AdMob ads are not allowed (no consent, ads = false); AdMob is used only when [bannerAllowed].
      */
     fun bannerSlot(
-        plan: Plan?, placement: Placement?, canRequestAds: Boolean,
+        plan: Plan?, placement: AdPlacements.Screen?, canRequestAds: Boolean,
         admobLoaded: Boolean, admobFailed: Boolean, elapsedMs: Long,
     ): BannerSlot = when {
-        plan == null || plan.isPro || placement == null -> BannerSlot.None
+        plan == null || plan.isPro || placement == null || AdPlacements.configOf(placement) == null -> BannerSlot.None
         !bannerAllowed(plan, canRequestAds, placement) ->
             // The SDK may still be starting (consent check): give it the same grace period.
             if (adsEnabled(plan) && elapsedMs < HOUSE_FALLBACK_MS) BannerSlot.Pending else BannerSlot.House

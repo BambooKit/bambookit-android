@@ -14,7 +14,13 @@ import com.bambookit.android.presentation.screens.LocalAppLocked
 import com.bambookit.android.presentation.screens.LocalDiagHandlers
 import com.bambookit.android.presentation.screens.DiagHandlers
 import com.bambookit.android.presentation.screens.ProfileScreen
-import com.bambookit.android.presentation.screens.AdBanner
+import com.bambookit.android.presentation.screens.AdEnv
+import com.bambookit.android.presentation.screens.LocalAdEnv
+import com.bambookit.android.presentation.screens.RewardChip
+import com.bambookit.android.presentation.screens.ScreenAd
+import com.bambookit.android.ads.AdPlacements
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import com.bambookit.android.presentation.screens.PlanChip
 import com.bambookit.android.presentation.screens.PlanLimitDialog
 import com.bambookit.android.presentation.screens.findActivity
@@ -296,7 +302,31 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     }
     val accountName = profile.account?.name ?: session?.name
     val accountEmail = profile.account?.email ?: session?.email
+    // What decides whether each tab has publisher content (no ads on loading, error-only or empty screens).
+    val overview by store.overview.collectAsState()
+    val projects by store.projects.collectAsState()
+    val sessions by store.sessions.collectAsState()
+    val devices by store.devices.collectAsState()
+    val notifications by store.notifications.collectAsState()
+    val pendingCount = approvals.count { it.isPending }
+    val hasContent = when (tab) {
+        Tab.Home -> overview?.let { o -> o.desktops.isNotEmpty() || o.activeSessions.isNotEmpty() || notifications.isNotEmpty() } == true
+        Tab.Projects -> loaded && (projects.isNotEmpty() || sessions.isNotEmpty())
+        Tab.Approvals -> pendingCount > 0
+        Tab.Devices -> devices.isNotEmpty()
+    }
+    val adScreen = when (tab) {
+        Tab.Home -> AdPlacements.Screen.Home
+        Tab.Projects -> AdPlacements.Screen.Projects
+        Tab.Approvals -> AdPlacements.Screen.Approvals
+        Tab.Devices -> AdPlacements.Screen.Devices
+    }
+    fun interstitial(transition: AdPlacements.Transition) {
+        context.findActivity()?.let { app.ads.onTransition(it, transition, pendingRequests = pendingCount, locked = locked) }
+    }
 
+    // Banners anywhere below read the plan from here; the PLAN_LIMIT dialog keeps every banner away.
+    CompositionLocalProvider(LocalAdEnv provides AdEnv(app.ads, planView, suppressed = planLimit != null)) {
     Scaffold(
         containerColor = BambooObsidian,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -308,7 +338,11 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                         val selected = tab == t
                         NavigationBarItem(
                             selected = selected,
-                            onClick = { tab = t },
+                            onClick = {
+                                // Back to Home from Projects: a natural break (the shared interstitial cap decides).
+                                if (tab == Tab.Projects && t == Tab.Home) interstitial(AdPlacements.Transition.ProjectsToHome)
+                                tab = t
+                            },
                             label = { Text(t.label) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = BambooGreen, selectedTextColor = BambooGreen, indicatorColor = BambooGreenSubtle,
@@ -341,15 +375,22 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                 SessionScreen(store, current, app.ads, onBack = {
                     openSession = null
                     // A natural break (back to the list): maybe an interstitial, within AdPolicy's limits.
-                    context.findActivity()?.let { app.ads.onLeftSession(it, pendingRequests = approvals.count { a -> a.isPending }, locked = locked) }
+                    interstitial(AdPlacements.Transition.LeftSession)
                 })
             } else Column(Modifier.fillMaxSize()) {
-                TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan, planChip = { PlanChip(plan) { focusPlan = true; showProfile = true } }) {
+                TabTopBar(tab, store, account = accountName ?: accountEmail, onScan = ::scan, planChip = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PlanChip(plan) { focusPlan = true; showProfile = true }
+                        RewardChip(store, app.ads, plan)
+                    }
+                }) {
                     ProfileButton(store, profile.account?.avatarUrl, accountName ?: accountEmail) { showProfile = true }
                 }
                 ConnectionBanner(store)
                 if (tab == Tab.Home) NotificationsOffBanner()
                 UpdateBanner(app.updater)
+                // Free plan: the tab's banner at the top where the bottom has buttons (Approvals) …
+                ScreenAd(adScreen, AdPlacements.Position.Top, hasContent)
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         Tab.Home -> HomeScreen(store, onOpenSession = { openSession = it }, onPair = ::scan, onApprovals = { tab = Tab.Approvals })
@@ -358,14 +399,11 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
                         Tab.Devices -> DevicesScreen(store, pairStatus, onScan = ::scan, onProfile = { showProfile = true })
                     }
                 }
-                // Free plan only: an adaptive banner above the bottom navigation, on Home and Projects only.
-                when (tab) {
-                    Tab.Home -> AdBanner(app.ads, planView, AdPolicy.Placement.Home)
-                    Tab.Projects -> AdBanner(app.ads, planView, AdPolicy.Placement.Projects)
-                    else -> Unit
-                }
+                // … or above the bottom navigation, under the scrolling list (Home, Projects, Devices).
+                ScreenAd(adScreen, AdPlacements.Position.Bottom, hasContent)
             }
         }
+    }
     }
     planLimit?.let { limit ->
         if (!locked) PlanLimitDialog(store, app.ads, limit, plan, onDismiss = { store.dismissPlanLimit(); app.ads.clearReward() })

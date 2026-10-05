@@ -13,6 +13,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -58,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.bambookit.android.BuildConfig
+import com.bambookit.android.ads.AdPlacements
 import com.bambookit.android.ads.AdPolicy
 import com.bambookit.android.ads.AdsManager
 import com.bambookit.android.ads.RewardState
@@ -67,12 +70,14 @@ import com.bambookit.android.data.Plan
 import com.bambookit.android.data.PlanLimitError
 import com.bambookit.android.data.PlanView
 import com.bambookit.android.presentation.theme.BambooBorder
+import com.bambookit.android.presentation.theme.BambooObsidian
 import com.bambookit.android.presentation.theme.BambooSurface
 import com.bambookit.android.presentation.theme.BambooSurfaceElevated
 import com.bambookit.android.presentation.theme.BambooSurfaceHigh
 import com.bambookit.android.presentation.theme.NeutralTint
 import com.bambookit.android.presentation.theme.StatusFailed
 import com.bambookit.android.presentation.theme.StatusRunning
+import com.bambookit.android.presentation.theme.StatusRunningTint
 import com.bambookit.android.presentation.theme.StatusSuccess
 import com.bambookit.android.presentation.theme.StatusSuccessTint
 import com.bambookit.android.presentation.theme.StatusWarning
@@ -129,37 +134,88 @@ fun limitReachedText(resetsAt: String?): String =
     "Daily limit reached — " + (parseInstant(resetsAt)?.let { "resets at ${shortClock(it)}" } ?: "resets tomorrow")
 
 /**
- * The banner slot at the bottom of Home and Projects (above the bottom navigation), Free plan only.
+ * What every screen needs to place ads: the ads manager, the plan, and whether a dialog that must stay ad-free
+ * (PLAN_LIMIT) is open. Provided once by the app shell; screens call [ScreenAd] / [InlineAd] without plumbing.
+ */
+data class AdEnv(val ads: AdsManager, val planView: PlanView, val suppressed: Boolean = false)
+
+val LocalAdEnv = compositionLocalOf<AdEnv?> { null }
+
+/**
+ * The fixed banner of [screen] when [AdPlacements] puts it at [at] (call it once at the top and once at the
+ * bottom of a screen; only the configured one draws). Nothing on Pro, forbidden screens, while locked, while
+ * PLAN_LIMIT is open, or when the screen has no content ([hasContent] false: loading, error-only or empty).
+ */
+@Composable
+fun ScreenAd(screen: AdPlacements.Screen, at: AdPlacements.Position, hasContent: Boolean = true) {
+    val env = LocalAdEnv.current ?: return
+    val pos = AdPlacements.banner(screen, env.planView.plan, hasContent, locked = LocalAppLocked.current, suppressed = env.suppressed)
+    if (pos != at) return
+    AdBanner(env.ads, env.planView, screen, at)
+}
+
+/** Items between inline banners in a list on [screen] (0 = none), at least one screen height apart. */
+@Composable
+fun inlineAdInterval(screen: AdPlacements.Screen): Int {
+    val env = LocalAdEnv.current ?: return 0
+    if (LocalAppLocked.current || env.suppressed) return 0
+    return AdPlacements.inlineInterval(screen, env.planView.plan, LocalConfiguration.current.screenHeightDp)
+}
+
+/** An inline banner between list items (Free plan only), labelled so it can't be mistaken for content. */
+@Composable
+fun InlineAd(screen: AdPlacements.Screen) {
+    val env = LocalAdEnv.current ?: return
+    if (!AdPlacements.freePlan(env.planView.plan) || LocalAppLocked.current || env.suppressed) return
+    AdBanner(env.ads, env.planView, screen, position = null)
+}
+
+/**
+ * One banner slot, Free plan only: [position] Bottom (above the bottom navigation, divider above), Top (under the
+ * top bar / tabs, with a gap on both sides and a divider below) or null (inline in a list, labelled).
  * An AdMob adaptive banner when one loads; otherwise (no fill, an error, no consent, or nothing within
  * [AdPolicy.HOUSE_FALLBACK_MS]) BambooKit's own "Go Pro" banner of the same height. Pro: nothing at all.
  */
 @Composable
-fun AdBanner(ads: AdsManager, planView: PlanView, placement: AdPolicy.Placement) {
+fun AdBanner(ads: AdsManager, planView: PlanView, placement: AdPlacements.Screen, position: AdPlacements.Position? = AdPlacements.Position.Bottom) {
     val plan = planView.plan
     val ready by ads.ready.collectAsState()
     if (plan == null || plan.isPro) return
     val context = LocalContext.current
+    // AdMob wants the activity, also inside dialogs (file / diff viewer).
+    val adContext = remember(context) { context.findActivity() ?: context }
+    val inline = position == null
     var timedOut by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(AdPolicy.HOUSE_FALLBACK_MS)
         timedOut = true
     }
     val useAdMob = AdPolicy.bannerAllowed(plan, ready, placement)
-    Column(Modifier.fillMaxWidth().background(BambooSurface)) {
-        HorizontalDivider(color = BambooBorder)
+    val gap = AdPlacements.TOP_GAP_DP.dp
+    Column(
+        Modifier.fillMaxWidth().background(if (inline) BambooObsidian else BambooSurface)
+            .then(if (inline) Modifier.padding(vertical = Space.s) else Modifier),
+    ) {
+        if (position == AdPlacements.Position.Bottom) HorizontalDivider(color = BambooBorder)
+        if (position == AdPlacements.Position.Top) Spacer(Modifier.height(gap))
         BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             val width = maxWidth.value.toInt()
-            val adSize = remember(width) { AdSize.getLargeAnchoredAdaptiveBannerAdSize(context, width) }
-            val height = adSize.height.coerceAtLeast(50).dp
+            val adSize = remember(width, inline) {
+                if (inline) AdSize.getInlineAdaptiveBannerAdSize(width, INLINE_MAX_DP)
+                else AdSize.getLargeAnchoredAdaptiveBannerAdSize(adContext, width)
+            }
             var loaded by remember(width, useAdMob) { mutableStateOf(false) }
+            var loadedHeight by remember(width, useAdMob) { mutableIntStateOf(0) }
             var failures by remember(width, useAdMob) { mutableIntStateOf(0) }
             val view = remember(width, useAdMob) {
-                if (!useAdMob) null else AdView(context).apply {
+                if (!useAdMob) null else AdView(adContext).apply {
                     setAdSize(adSize)
                     adUnitId = BuildConfig.ADMOB_BANNER
+                    val self = this
                     adListener = object : AdListener() {
                         override fun onAdLoaded() {
                             loaded = true
+                            loadedHeight = self.adSize?.height ?: 0
                             ads.reportBanner(AdPolicy.SlotStatus(AdPolicy.LoadState.Loaded))
                         }
 
@@ -187,11 +243,30 @@ fun AdBanner(ads: AdsManager, planView: PlanView, placement: AdPolicy.Placement)
                 plan, placement, ready, admobLoaded = loaded, admobFailed = failures > 0,
                 elapsedMs = if (timedOut) AdPolicy.HOUSE_FALLBACK_MS else 0L,
             )
-            Box(Modifier.fillMaxWidth().height(height), contentAlignment = Alignment.Center) {
-                // The AdView stays attached while it loads; the house banner covers the slot only while it has no ad.
-                if (view != null) AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth())
-                if (slot == AdPolicy.BannerSlot.House) HouseBanner(planView.products, Modifier.fillMaxSize())
+            val height = when {
+                // An inline adaptive banner reports its real height once loaded.
+                inline && slot == AdPolicy.BannerSlot.AdMob && loadedHeight > 0 -> loadedHeight
+                inline -> INLINE_HOUSE_DP
+                else -> adSize.height
+            }.coerceAtLeast(50).dp
+            Column(Modifier.fillMaxWidth()) {
+                if (inline && (slot == AdPolicy.BannerSlot.AdMob || slot == AdPolicy.BannerSlot.House)) Text(
+                    if (slot == AdPolicy.BannerSlot.House) "From BambooKit" else "Advertisement",
+                    color = TextMuted, fontSize = 10.sp, modifier = Modifier.padding(bottom = 2.dp),
+                )
+                Box(
+                    Modifier.fillMaxWidth().height(height).then(if (inline) Modifier.clip(RoundedCornerShape(12.dp)) else Modifier),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // The AdView stays attached while it loads; the house banner covers the slot only while it has no ad.
+                    if (view != null) AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth())
+                    if (slot == AdPolicy.BannerSlot.House) HouseBanner(planView.products, Modifier.fillMaxSize())
+                }
             }
+        }
+        if (position == AdPlacements.Position.Top) {
+            Spacer(Modifier.height(gap))
+            HorizontalDivider(color = BambooBorder)
         }
     }
 }
@@ -223,6 +298,40 @@ fun PlanChip(plan: Plan?, onClick: () -> Unit) {
         if (plan.isPro) Chip("Pro", StatusSuccess, StatusSuccessTint, icon = Icons.Filled.WorkspacePremium)
         else Chip("Free", StatusWarning, StatusWarningTint)
     }
+}
+
+/** "Watch ad · 24 h Pro" on wide screens, "24 h Pro" (with the video icon) where the top bar is narrow. */
+fun rewardChipLabel(hours: Int, screenWidthDp: Int): String = if (screenWidthDp >= 400) "Watch ad · $hours h Pro" else "$hours h Pro"
+
+/**
+ * Next to the Free chip on Home: a rewarded ad for 24 h of Pro (Free plan with rewards left today only).
+ * Failures and the reward are reported in the snackbar.
+ */
+@Composable
+fun RewardChip(store: BambooStore, ads: AdsManager, plan: Plan?) {
+    if (plan == null || !plan.canWatchReward) return
+    val context = LocalContext.current
+    val state by ads.reward.collectAsState()
+    var mine by remember { mutableStateOf(false) }
+    val busy = state == RewardState.Loading || state == RewardState.Showing
+    LaunchedEffect(state) {
+        if (!mine) return@LaunchedEffect
+        when (val s = state) {
+            is RewardState.Failed -> { store.notify(s.message); ads.clearReward(); mine = false }
+            RewardState.Earned -> { store.notify("Thanks! Pro turns on in a few seconds."); ads.clearReward(); mine = false }
+            RewardState.Idle -> mine = false
+            else -> Unit
+        }
+    }
+    val hours = plan.rewards.hours
+    val label = if (busy) "Loading ad…" else rewardChipLabel(hours, LocalConfiguration.current.screenWidthDp)
+    Spacer(Modifier.width(6.dp))
+    Box(
+        Modifier.clip(ChipShape).clickable(enabled = !busy, onClickLabel = "Watch an ad for $hours hours of Pro") {
+            mine = true
+            watchReward(context, store, ads)
+        },
+    ) { Chip(label, StatusRunning, StatusRunningTint, icon = Icons.Filled.OndemandVideo) }
 }
 
 /** Starts the rewarded ad (24 h of Pro). */
@@ -322,6 +431,9 @@ private fun ProFeatures(plan: Plan) {
 
 private const val BANNER_RETRY_MS = 60_000L
 private const val BANNER_RETRIES = 5
+/** Inline banners in lists: at most this tall (inline adaptive size); the house banner there is this tall. */
+private const val INLINE_MAX_DP = 100
+private const val INLINE_HOUSE_DP = 64
 
 @Composable
 private fun UsageBar(label: String, used: Int, max: Int?) {
@@ -419,7 +531,7 @@ fun PlanSection(store: BambooStore, ads: AdsManager, view: PlanView) {
         }
     }
     if (plan != null && !plan.isPro) Text(
-        "The Free plan shows ads from Google AdMob on Home and Projects and occasionally between sessions. " +
+        "The Free plan shows ads from Google AdMob on most screens and now and then between screens (at most every 15 minutes, 4 a day). " +
             "Google may use your device's advertising ID; in the EEA and UK you choose this in the consent form. Pro has no ads.",
         color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = Space.s),
     )

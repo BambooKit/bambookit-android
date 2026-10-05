@@ -182,15 +182,19 @@ class AdsManager(private val app: Application, private val scope: CoroutineScope
         })
     }
 
+    /** The user left a session back to the list. */
+    fun onLeftSession(activity: Activity, pendingRequests: Int, locked: Boolean): Boolean =
+        onTransition(activity, AdPlacements.Transition.LeftSession, pendingRequests, locked)
+
     /**
-     * The user left a session back to the list: shows a loaded interstitial when [AdPolicy] allows it
-     * (no pending request, not locked, frequency cap). Returns true when one is shown.
+     * A natural break ([AdPlacements.Transition]): shows a loaded interstitial when [AdPolicy] allows it (placement
+     * on, no pending request, not locked, the one shared frequency cap). Returns true when one is shown.
      */
-    fun onLeftSession(activity: Activity, pendingRequests: Int, locked: Boolean): Boolean {
+    fun onTransition(activity: Activity, transition: AdPlacements.Transition, pendingRequests: Int, locked: Boolean): Boolean {
         val now = System.currentTimeMillis()
         val ctx = AdPolicy.InterstitialContext(
             plan = plan, canRequestAds = _ready.value, pendingRequests = pendingRequests, locked = locked,
-            sinceAppStartMs = SystemClock.elapsedRealtime() - startedAt, now = now, shownAt = history(),
+            sinceAppStartMs = SystemClock.elapsedRealtime() - startedAt, now = now, shownAt = history(), transition = transition,
         )
         if (!AdPolicy.canShowInterstitial(ctx)) return false
         val ad = interstitial?.takeIf { SystemClock.elapsedRealtime() - interstitialLoadedAt < AD_MAX_AGE_MS }

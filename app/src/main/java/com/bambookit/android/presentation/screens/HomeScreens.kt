@@ -1,6 +1,8 @@
 package com.bambookit.android.presentation.screens
 
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.foundation.lazy.itemsIndexed
+import com.bambookit.android.ads.AdPlacements
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.background
@@ -125,6 +127,7 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
     val notifications by store.notifications.collectAsState()
     val clear by store.clearActivity.collectAsState()
     var confirmClear by rememberSaveable { mutableStateOf(false) }
+    val inlineEvery = inlineAdInterval(AdPlacements.Screen.Home)
 
     if (confirmClear) {
         AlertDialog(
@@ -181,9 +184,11 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
             if (o.activeSessions.isEmpty()) item {
                 BkCard { Text("No agent is working right now.", color = TextSecondary, fontSize = 13.sp) }
             }
-            items(o.activeSessions, key = { "s:" + it.id }) { s ->
+            itemsIndexed(o.activeSessions, key = { _, it -> "s:" + it.id }) { i, s ->
                 SessionRow(store, s, onOpenSession)
                 Spacer(Modifier.height(Space.s))
+                // Free plan: an inline banner after every 8th session (at least a screen height apart).
+                if (AdPlacements.inlineAfter(i, o.activeSessions.size, inlineEvery)) InlineAd(AdPlacements.Screen.Home)
             }
 
             item {
@@ -339,6 +344,7 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusPro
     val projectIds = projects.map { it.id }.toSet()
     val orphans = sessions.filter { it.projectId == null || it.projectId !in projectIds }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val inlineEvery = inlineAdInterval(AdPlacements.Screen.Projects)
     // Opened from Profile → Projects managed: scroll to that project and show all of its sessions.
     LaunchedEffect(focusProjectId, projects.size) {
         val id = focusProjectId ?: return@LaunchedEffect
@@ -371,18 +377,25 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusPro
                     EmptyState("No projects yet", "Open a project in BambooKit Desktop on your PC and it shows up here.", Icons.Filled.Folder)
                 }
             }
+            // Session rows shown, counted across projects, for the inline banners (inside a row's item, so the
+            // item indexes used to scroll to a project stay the same).
+            val shownRows = projects.sumOf { p -> sessions.count { it.projectId == p.id }.let { n -> if (p.id in expanded) n else minOf(n, 3) } } + orphans.size
+            var row = 0
             projects.forEach { p ->
                 val list = sessions.filter { it.projectId == p.id }
                 val open = p.id in expanded
+                val first = row
+                row += if (open) list.size else minOf(list.size, 3)
                 item(key = "p:" + p.id) {
                     Spacer(Modifier.height(Space.m))
                     ProjectHeader(p, devices.firstOrNull { it.id == p.deviceId }, locked = sessionsLocked, onNewSession = { if (sessionsLocked) store.showLocalPlanLimit(sessions = true) else newIn = p.id })
                     Spacer(Modifier.height(Space.s))
                     if (list.isEmpty()) Text("No sessions in this project yet.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
                 }
-                items(if (open) list else list.take(3), key = { "ps:" + it.id }) { s ->
+                itemsIndexed(if (open) list else list.take(3), key = { _, it -> "ps:" + it.id }) { i, s ->
                     SessionRow(store, s, onOpenSession)
                     Spacer(Modifier.height(Space.s))
+                    if (AdPlacements.inlineAfter(first + i, shownRows, inlineEvery)) InlineAd(AdPlacements.Screen.Projects)
                 }
                 if (list.size > 3) item(key = "pm:" + p.id) {
                     TextButton(onClick = { expanded = if (open) expanded - p.id else expanded + p.id }) {
@@ -392,9 +405,11 @@ fun ProjectsScreen(store: BambooStore, onOpenSession: (String) -> Unit, focusPro
             }
             if (orphans.isNotEmpty()) {
                 item { SectionTitle("Other sessions") }
-                items(orphans, key = { "o:" + it.id }) { s ->
+                val first = row
+                itemsIndexed(orphans, key = { _, it -> "o:" + it.id }) { i, s ->
                     SessionRow(store, s, onOpenSession)
                     Spacer(Modifier.height(Space.s))
+                    if (AdPlacements.inlineAfter(first + i, shownRows, inlineEvery)) InlineAd(AdPlacements.Screen.Projects)
                 }
             }
             item { BottomSpacer() }

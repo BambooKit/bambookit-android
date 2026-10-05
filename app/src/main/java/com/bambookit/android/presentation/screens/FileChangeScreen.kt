@@ -1,5 +1,6 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.ads.AdPlacements
 import com.bambookit.android.data.FileState
 import com.bambookit.android.data.fileState
 import com.bambookit.android.data.diffStats
@@ -262,6 +263,8 @@ fun FileChangeScreen(
                 }
             }
             HorizontalDivider(color = BambooBorder)
+            // Free plan: a banner under the Diff / Before / After switch (with a gap), never at the bottom.
+            ScreenAd(AdPlacements.Screen.DiffViewer, AdPlacements.Position.Top)
             Box(Modifier.weight(1f)) {
                 when (mode) {
                     0 -> DiffPane(change, state, selected, onSelect = { selected = it }, onShowAfter = { mode = 2 })

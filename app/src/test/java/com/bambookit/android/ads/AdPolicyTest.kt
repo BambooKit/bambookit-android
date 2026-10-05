@@ -21,7 +21,7 @@ class AdPolicyTest {
     @Test
     fun `pro gets no ads at all`() {
         assertFalse(AdPolicy.adsEnabled(pro))
-        assertFalse(AdPolicy.bannerAllowed(pro, true, AdPolicy.Placement.Home))
+        assertFalse(AdPolicy.bannerAllowed(pro, true, AdPlacements.Screen.Home))
         assertEquals(AdPolicy.Block.NoAds, AdPolicy.interstitialBlock(ctx(plan = pro)))
         // Even if a server said ads = true for a Pro plan, Pro wins.
         assertFalse(AdPolicy.adsEnabled(pro.copy(ads = true)))
@@ -31,14 +31,14 @@ class AdPolicyTest {
     fun `unknown plan or ads false means no ads`() {
         assertFalse(AdPolicy.adsEnabled(null))
         assertFalse(AdPolicy.adsEnabled(free.copy(ads = false)))
-        assertFalse(AdPolicy.bannerAllowed(null, true, AdPolicy.Placement.Projects))
+        assertFalse(AdPolicy.bannerAllowed(null, true, AdPlacements.Screen.Projects))
     }
 
     @Test
     fun `free plan banners need consent and an allowed placement`() {
-        assertTrue(AdPolicy.bannerAllowed(free, true, AdPolicy.Placement.Home))
-        assertTrue(AdPolicy.bannerAllowed(free, true, AdPolicy.Placement.Projects))
-        assertFalse(AdPolicy.bannerAllowed(free, false, AdPolicy.Placement.Home))
+        assertTrue(AdPolicy.bannerAllowed(free, true, AdPlacements.Screen.Home))
+        assertTrue(AdPolicy.bannerAllowed(free, true, AdPlacements.Screen.Projects))
+        assertFalse(AdPolicy.bannerAllowed(free, false, AdPlacements.Screen.Home))
         assertFalse(AdPolicy.bannerAllowed(free, true, null))
     }
 

@@ -1,7 +1,7 @@
 package com.bambookit.android.ads
 
 import com.bambookit.android.ads.AdPolicy.BannerSlot
-import com.bambookit.android.ads.AdPolicy.Placement
+import com.bambookit.android.ads.AdPlacements.Screen as Placement
 import com.bambookit.android.data.BillingProduct
 import com.bambookit.android.data.Plan
 import com.bambookit.android.presentation.screens.houseBannerPrice

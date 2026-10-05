@@ -1,5 +1,6 @@
 package com.bambookit.android.presentation.screens
 
+import com.bambookit.android.ads.AdPlacements
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -160,7 +161,7 @@ fun UpdateScreen(updater: AppUpdater, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().background(BambooObsidian)) {
         ScreenTopBar("App updates", "BambooKit for Android", navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } })
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.screen)) {
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = Space.screen)) {
             installed?.let { msg ->
                 Banner(msg, Icons.Filled.CheckCircle, color = StatusSuccess, tint = com.bambookit.android.presentation.theme.StatusSuccessTint, actionLabel = "OK", onAction = { updater.dismissInstalled() }, modifier = Modifier.padding(top = Space.s))
             }
@@ -224,6 +225,8 @@ fun UpdateScreen(updater: AppUpdater, onBack: () -> Unit) {
             latest?.let { r -> ReleaseNotes(r) }
             BottomSpacer()
         }
+        // Free plan: a banner at the bottom, under the scrolling page (no buttons fixed there).
+        ScreenAd(AdPlacements.Screen.AppUpdates, AdPlacements.Position.Bottom)
     }
 }
 

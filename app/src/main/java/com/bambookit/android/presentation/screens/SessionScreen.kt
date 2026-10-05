@@ -73,7 +73,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bambookit.android.R
+import com.bambookit.android.ads.AdPlacements
 import com.bambookit.android.ads.AdsManager
+import androidx.compose.ui.platform.LocalContext
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.data.ContentError
 import com.bambookit.android.data.Part
@@ -124,6 +126,15 @@ fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack
     val approvals = remember(d?.history?.data, d?.approvals) { d?.let { mergedApprovals(it) }.orEmpty() }
     val close = { store.closeSession(); onBack() }
     BackHandler(onBack = close)
+    val context = LocalContext.current
+    val locked = LocalAppLocked.current
+    val allApprovals by store.approvals.collectAsState()
+    /** Leaving the file or diff viewer is a natural break: maybe an interstitial (shared cap, never with a request waiting). */
+    fun leftViewer() {
+        val pending = allApprovals.count { it.isPending }
+        context.findActivity()?.let { ads.onTransition(it, AdPlacements.Transition.LeftFileViewer, pendingRequests = pending, locked = locked) }
+    }
+    val errorOnly = d == null || (s == null && d.history.data == null && d.error != null && !d.loading && !d.history.loading)
 
     Column(Modifier.fillMaxSize()) {
         ScreenTopBar(
@@ -150,6 +161,12 @@ fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack
                 )
             }
         }
+        // Free plan: a banner under the tabs (the bottom has the chat box / Continue on PC). Not on loading or
+        // error-only panes, empty tabs, or while the file / diff viewer covers the screen (it has its own).
+        ScreenAd(
+            AdPlacements.sessionScreen(tab.name), AdPlacements.Position.Top,
+            hasContent = !errorOnly && d != null && sessionTabHasContent(tab, d) && openChange == null && file == null,
+        )
         Box(Modifier.weight(1f)) {
             when {
                 d == null -> LoadingState("Loading session…")
@@ -255,7 +272,7 @@ fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack
         change?.let { change ->
             FileChangeScreen(
                 change, versions, pcTitle,
-                onClose = { openChange = null; store.clearVersions() },
+                onClose = { openChange = null; store.clearVersions(); leftViewer() },
                 onLoadVersions = { store.loadVersions(change.file) },
                 context = ChangeContext(
                     project = s?.projectName ?: h.projectName, branch = h.branch,
@@ -264,7 +281,21 @@ fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack
             )
         }
     }
-    file?.let { CodeViewer(it, pcTitle, onClose = store::closeFile, onRetry = { store.openFile(it.path) }) }
+    file?.let { CodeViewer(it, pcTitle, onClose = { store.closeFile(); leftViewer() }, onRetry = { store.openFile(it.path) }) }
+}
+
+/** Whether a session tab shows publisher content (ads only then): not empty, not just a loading or error state. */
+internal fun sessionTabHasContent(tab: SessionTabId, d: SessionDetail): Boolean {
+    val h = d.history.data?.history
+    return when (tab) {
+        SessionTabId.Summary -> d.session != null || h != null
+        SessionTabId.Todos -> d.todos.todos.isNotEmpty()
+        SessionTabId.Prompts, SessionTabId.Timeline -> h?.prompts?.isNotEmpty() == true
+        SessionTabId.Changes, SessionTabId.Files -> h?.changes?.isNotEmpty() == true
+        SessionTabId.Project -> d.tree?.listing != null
+        SessionTabId.Diagram -> d.diagram?.diagram != null || d.fileMap?.entries?.isNotEmpty() == true
+        SessionTabId.Chat -> d.parts.isNotEmpty()
+    }
 }
 
 // ------------------------------------------------------------------ content from the PC
