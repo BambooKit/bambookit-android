@@ -18,7 +18,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -44,23 +43,21 @@ import androidx.compose.ui.unit.sp
 import com.bambookit.android.data.Achievement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import com.bambookit.android.data.AchievementIcon
 import com.bambookit.android.data.AchievementSummary
+import com.bambookit.android.presentation.components.AchievementBadge
+import com.bambookit.android.presentation.components.BadgeState
+import com.bambookit.android.presentation.components.vector
+import com.bambookit.android.presentation.theme.LocalTierPalette
 import com.bambookit.android.presentation.theme.BambooBorderStrong
 import com.bambookit.android.presentation.theme.BambooGreenSubtle
 import com.bambookit.android.presentation.theme.BambooSurface
-import com.bambookit.android.presentation.theme.TierBronze
-import com.bambookit.android.presentation.theme.TierDiamond
-import com.bambookit.android.presentation.theme.TierGold
-import com.bambookit.android.presentation.theme.TierLocked
-import com.bambookit.android.presentation.theme.TierPlatinum
-import com.bambookit.android.presentation.theme.TierSilver
 import com.bambookit.android.data.BambooStore
 import com.bambookit.android.data.Project
 import com.bambookit.android.data.ProjectStat
@@ -339,9 +336,16 @@ private fun AchievementHeader(
     summary: AchievementSummary, fromServer: Boolean, list: List<Achievement>,
     filter: StatsFormat.Filter, onFilter: (StatsFormat.Filter) -> Unit,
 ) {
+    // BambooKit Master's crown in its current tier when the server has it, otherwise a trophy.
+    val master = list.firstOrNull { it.id == StatsFormat.MASTER_ID }
     BkCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🏆", fontSize = 22.sp)
+            AchievementBadge(
+                if (master != null) AchievementIcon.Crown.vector() else AchievementIcon.Trophy.vector(),
+                tier = master?.tier,
+                state = if (summary.unlocked > 0) BadgeState.Unlocked else BadgeState.Locked,
+                contentDescription = master?.tier?.let { "BambooKit Master ${StatsFormat.tierLabel(it)}" },
+            )
             Spacer(Modifier.width(Space.m))
             Column(Modifier.weight(1f)) {
                 Text(StatsFormat.summaryLine(summary, fromServer), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium, lineHeight = 18.sp)
@@ -368,14 +372,8 @@ private fun AchievementHeader(
     }
 }
 
-private fun tierColor(tier: String?): Color = when (tier?.lowercase()) {
-    "bronze" -> TierBronze
-    "silver" -> TierSilver
-    "gold" -> TierGold
-    "platinum" -> TierPlatinum
-    "diamond" -> TierDiamond
-    else -> TierLocked
-}
+@Composable
+private fun tierColor(tier: String?): Color = LocalTierPalette.current.let { it.of(tier) ?: it.locked }
 
 /** Five dots, one per tier, filled in the tier's color when unlocked. */
 @Composable
@@ -385,7 +383,7 @@ private fun TierDots(a: Achievement) {
             val on = t.unlocked
             Box(
                 Modifier.size(8.dp).clip(CircleShape)
-                    .background(if (on) tierColor(t.name) else TierLocked.copy(alpha = 0.5f))
+                    .background(if (on) tierColor(t.name) else LocalTierPalette.current.locked.copy(alpha = 0.5f))
                     .semantics { contentDescription = "${StatsFormat.tierLabel(t.name)} ${if (on) "unlocked" else "locked"}" },
             )
         }
@@ -396,29 +394,35 @@ private fun TierDots(a: Achievement) {
 private fun AchievementRow(a: Achievement) {
     val tiered = StatsFormat.isTiered(a)
     val fraction = StatsFormat.tierFraction(a)
-    val medal = StatsFormat.medal(a.tier)
+    val reached = tiered && StatsFormat.medal(a.tier) != null
     val dim = !a.trackable
-    BkCard(border = if (a.unlocked) com.bambookit.android.presentation.theme.AchievementUnlockedBorder else BambooBorder) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.alpha(if (dim) 0.55f else 1f)) {
-            val emoji = a.emoji
-            if (emoji != null) Box(
-                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(if (a.unlocked) StatusWarningTint else NeutralTint),
-                contentAlignment = Alignment.Center,
-            ) { Text(emoji, fontSize = 18.sp) }
-            else IconTile(
-                if (a.unlocked) Icons.Filled.EmojiEvents else Icons.Filled.Lock,
-                tint = if (a.unlocked) StatusWarning else TextMuted,
-                background = if (a.unlocked) StatusWarningTint else NeutralTint,
-                size = 34.dp,
+    val border = when {
+        reached -> tierColor(a.tier).copy(alpha = 0.45f)
+        a.unlocked -> com.bambookit.android.presentation.theme.AchievementUnlockedBorder
+        else -> BambooBorder
+    }
+    BkCard(border = border) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AchievementBadge(
+                a.id, tier = a.tier,
+                state = when {
+                    !a.trackable -> BadgeState.NotTracked
+                    a.unlocked -> BadgeState.Unlocked
+                    else -> BadgeState.Locked
+                },
+                contentDescription = when {
+                    !a.trackable -> "Not tracked"
+                    reached -> StatsFormat.tierLabel(a.tier)
+                    a.unlocked -> "Unlocked"
+                    else -> "Locked"
+                },
             )
             Spacer(Modifier.width(Space.m))
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).alpha(if (dim) 0.55f else 1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(a.title, color = TextPrimary, fontWeight = FontWeight.Medium, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (tiered && medal != null) {
+                    if (reached) {
                         Spacer(Modifier.width(6.dp))
-                        Text(medal, fontSize = 14.sp, modifier = Modifier.semantics { contentDescription = StatsFormat.tierLabel(a.tier) })
-                        Spacer(Modifier.width(4.dp))
                         Text(StatsFormat.tierLabel(a.tier), color = tierColor(a.tier), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }

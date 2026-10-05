@@ -270,6 +270,9 @@ class BambooStore(
     val refreshing: StateFlow<Boolean> = _refreshing
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
+    private val _achievementUnlocked = MutableSharedFlow<AchievementEvent>(extraBufferCapacity = 8)
+    /** achievement.unlocked events, shown as a snackbar with the achievement's badge. */
+    val achievementUnlocked: SharedFlow<AchievementEvent> = _achievementUnlocked
     private val _myDeviceId = MutableStateFlow(store.deviceId)
     val myDeviceId: StateFlow<String?> = _myDeviceId
 
@@ -1482,7 +1485,7 @@ class BambooStore(
                 }
                 "achievement.unlocked" -> {
                     val a = runCatching { json.decodeFromJsonElement<AchievementEvent>(event.payload) }.getOrNull()
-                    a?.let { StatsFormat.eventMessage(it) }?.let { _messages.tryEmit(it) }
+                    a?.takeIf { StatsFormat.eventMessage(it) != null }?.let { _achievementUnlocked.tryEmit(it) }
                     if (_stats.value.stats != null || _stats.value.loading) loadStats()
                 }
                 "device.status", "device.registered", "device.updated", "device.revoked", "device.unlinked", "pairing.completed" -> scope.launch {

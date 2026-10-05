@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.unit.dp
 
 private val DarkColorScheme = darkColorScheme(
@@ -49,9 +50,12 @@ private val BambooShapes = Shapes(
 
 @Composable
 fun BambooKitTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = DarkColorScheme,
-        shapes = BambooShapes,
-        content = content
-    )
+    // BambooKit is dark-only; TierPaletteLight is there for a light scheme.
+    CompositionLocalProvider(LocalTierPalette provides TierPaletteDark) {
+        MaterialTheme(
+            colorScheme = DarkColorScheme,
+            shapes = BambooShapes,
+            content = content
+        )
+    }
 }

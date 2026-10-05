@@ -285,6 +285,12 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
         store.loadPlan()
     }
     LaunchedEffect(Unit) { store.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(Unit) {
+        store.achievementUnlocked.collect { e ->
+            val text = com.bambookit.android.data.StatsFormat.eventMessage(e) ?: return@collect
+            snackbar.showSnackbar(com.bambookit.android.presentation.components.AchievementSnackbarVisuals(e, text))
+        }
+    }
     // An update really replaced the app: say so once.
     LaunchedEffect(Unit) {
         app.updater.installed.collect { msg -> if (msg != null) snackbar.showSnackbar(msg) }
@@ -329,7 +335,14 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     CompositionLocalProvider(LocalAdEnv provides AdEnv(app.ads, planView, suppressed = planLimit != null)) {
     Scaffold(
         containerColor = BambooObsidian,
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = {
+            SnackbarHost(snackbar) { data ->
+                val v = data.visuals
+                if (v is com.bambookit.android.presentation.components.AchievementSnackbarVisuals) {
+                    com.bambookit.android.presentation.components.AchievementSnackbar(v.event)
+                } else androidx.compose.material3.Snackbar(data)
+            }
+        },
         bottomBar = {
             if (openSession == null && !showProfile) Column {
                 HorizontalDivider(color = BambooBorder)

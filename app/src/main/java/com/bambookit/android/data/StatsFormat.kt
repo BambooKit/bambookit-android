@@ -42,6 +42,9 @@ object StatsFormat {
 
     val TIERS = listOf("bronze", "silver", "gold", "platinum", "diamond")
 
+    /** BambooKit Master: counts the other achievements at Bronze or better. */
+    const val MASTER_ID = "bambookit-master"
+
     /** 🥉 🥈 🥇 💎 💠, or null for no tier. */
     fun medal(tier: String?): String? = when (tier?.lowercase()) {
         "bronze" -> "🥉"
@@ -148,6 +151,19 @@ object StatsFormat {
             e.tier != null -> "${medal(e.tier)?.let { "$it " } ?: ""}Achievement unlocked: $title"
             else -> "Achievement unlocked: $title"
         }
+    }
+
+    /**
+     * An event title without the emoji in front (the badge shows the icon) and, when [tier] is given, without the
+     * trailing " — Gold": "💻 Code Written — Gold" → "Code Written".
+     */
+    fun plainTitle(title: String, tier: String? = null): String {
+        var t = title.trim().dropWhile { !it.isLetterOrDigit() }.trim()
+        if (tier != null) {
+            val suffix = " — ${tierLabel(tier)}"
+            if (t.endsWith(suffix, ignoreCase = true)) t = t.dropLast(suffix.length).trim()
+        }
+        return t.ifEmpty { title.trim() }
     }
 
     /**
