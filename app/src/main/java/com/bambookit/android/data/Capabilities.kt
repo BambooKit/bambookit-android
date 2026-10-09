@@ -16,6 +16,7 @@ enum class DesktopFeature(val capability: String, val since: String, val reason:
     ProviderKeys("provider-keys.encrypted", "1.0.3", "Encrypted provider keys need the newer secure credential protocol."),
     Tree("relay.tree", "1.0.2", "Browsing project files needs the newer desktop."),
     File("relay.file", "1.0.2", "Viewing project files needs the newer desktop."),
+    RemoteTerminal("remote-terminal", "1.1.0", "The remote terminal needs the newer desktop."),
 }
 
 object DesktopCapabilities {

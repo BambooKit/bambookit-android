@@ -61,7 +61,26 @@ data class Device(
     /** Desktops only (API 1.1.0+): desktop protocol and the capabilities the PC has. Null from older servers. */
     val protocol: Int? = null,
     val capabilities: List<String>? = null,
+    /** Desktops only (API 1.3.0+): the PC's live settings (approval mode, keep-awake). Null from older servers. */
+    val settings: DeviceSettings? = null,
 )
+
+/**
+ * A PC's live settings, reported wherever it reports appVersion/capabilities and kept current with
+ * the ephemeral device.updated event (API 1.3.0). [approvalMode]: 'ask', 'edits' (Auto mode) or 'all'
+ * (Auto-approve). [keepAwake]: the PC's ☕ keep-awake is on.
+ */
+@Serializable
+data class DeviceSettings(
+    val approvalMode: String = "ask",
+    val keepAwake: Boolean = false,
+)
+
+/** The ephemeral device.updated event payload: a PC's settings changed. */
+@Serializable data class DeviceUpdated(val deviceId: String = "", val settings: DeviceSettings? = null)
+
+/** The ephemeral terminal.data event payload (remote terminal, API 1.3.0 / desktop `remote-terminal`). */
+@Serializable data class TerminalData(val termId: String = "", val data: String = "")
 
 @Serializable
 data class Project(
@@ -154,9 +173,13 @@ data class Approval(
     val answers: List<List<String>>? = null,
     val createdAt: String? = null,
     val resolvedAt: String? = null,
+    /** Who resolved a non-pending request: 'phone', 'web', 'pc', 'auto', or null (API 1.3.0). */
+    val resolvedBy: String? = null,
 ) {
     val isPending get() = status == "PENDING" || status == "RESPONDING"
     val isQuestion get() = kind == "question"
+    /** A resolved request the PC approved automatically (Auto mode / Auto-approve). */
+    val isAuto get() = resolvedBy == "auto"
 }
 
 /** One question of a question request. [multiple]: several options may be chosen. [custom]: typed answers allowed unless false. */
@@ -546,6 +569,8 @@ data class AchievementSummary(
 data class ProfileStats(
     val timeZone: String? = null,
     val memberSince: String? = null,
+    /** Distinct files changed in sessions with activity in the last 24 h (API 1.3.0, GET /v1/me/stats). */
+    val filesChanged24h: Int = 0,
     val projects: ProjectStats = ProjectStats(),
     val sessions: SessionCounts = SessionCounts(),
     val tasks: TaskCounts = TaskCounts(),

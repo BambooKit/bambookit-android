@@ -162,6 +162,9 @@ class ApiClient(
 
     private fun query(value: String) = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
     suspend fun approvals(pendingOnly: Boolean = true): List<Approval> = get("/v1/approvals" + if (pendingOnly) "?status=PENDING" else "")
+
+    /** Approvals history (API 1.3.0): [status] is "pending", "resolved" or "all"; resolved items are kept for 30 days. */
+    suspend fun approvalsByStatus(status: String): List<Approval> = get("/v1/approvals?status=${query(status)}")
     suspend fun notifications(): List<NotificationItem> = get("/v1/notifications")
     suspend fun command(id: String): Command = get("/v1/commands/$id")
 

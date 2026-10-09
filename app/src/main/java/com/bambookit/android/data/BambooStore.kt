@@ -16,7 +16,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.JsonObject
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -44,6 +46,13 @@ data class ContentError(
     val desktopOutdated get() = code == "DESKTOP_OUTDATED" || code == "DESKTOP_UPDATE_REQUIRED"
     /** The BambooKit server is older than this app and doesn't have the route. */
     val serverOutdated get() = Diagnostics.isRouteMissing(code, diagnosis.status, diagnosis.message)
+
+    /**
+     * A genuine capability/version gap: the PC's BambooKit Desktop or the server is too old for this request.
+     * ONLY then may the UI say "<PC> couldn't do this" / "Showing the summary". A plain DESKTOP_ERROR (the PC
+     * answered with a real error, no version mismatch) is not a version gap and must show the real error instead.
+     */
+    val versionGap get() = serverOutdated || desktopOutdated || update != null
 
     companion object {
         /** The PC lacks [r]: shown as an "Update BambooKit Desktop" card; no request was sent. */
@@ -175,6 +184,21 @@ data class ProvidersView(
 /** The full detail of one request (GET /v1/approvals/:id/detail). */
 data class ApprovalDetailView(val loading: Boolean = true, val detail: ApprovalDetail? = null, val error: ContentError? = null)
 
+/** The Approvals screen's filter (GET /v1/approvals?status=). */
+enum class ApprovalFilter(val label: String, val status: String) { Pending("Pending", "pending"), Resolved("Resolved", "resolved"), All("All", "all") }
+
+/** The Approvals screen's list for the chosen filter (loaded on demand, API 1.3.0). */
+data class ApprovalsHistoryView(
+    val filter: ApprovalFilter = ApprovalFilter.Pending,
+    val loading: Boolean = false,
+    val loaded: Boolean = false,
+    val items: List<Approval> = emptyList(),
+    val error: ContentError? = null,
+)
+
+/** A remote power action in flight / its result (Developer options → Power). */
+data class PowerResult(val deviceId: String, val action: String, val busy: Boolean = true, val error: String? = null, val done: Boolean = false)
+
 /** "New session" from the phone: sent, waiting for the PC to create it, failed, or created (then opened). */
 sealed interface NewSessionState {
     data object Sending : NewSessionState
@@ -290,6 +314,22 @@ class BambooStore(
     private val providerOps = HashMap<String, Triple<String, String, String>>()
     private val sendGuard = SendGuard()
 
+    private val _approvalsHistory = MutableStateFlow(ApprovalsHistoryView())
+    /** The Approvals screen's filtered list (Pending / Resolved / All). */
+    val approvalsHistory: StateFlow<ApprovalsHistoryView> = _approvalsHistory
+    /** PC settings commands (SET_APPROVAL_MODE / SET_KEEP_AWAKE) in flight, by device id. */
+    private val _pcBusy = MutableStateFlow<Set<String>>(emptySet())
+    val pcBusy: StateFlow<Set<String>> = _pcBusy
+    private val _developerOptions = MutableStateFlow(store.developerOptions)
+    /** Developer options (Power, Terminal, Research), off by default. */
+    val developerOptions: StateFlow<Boolean> = _developerOptions
+    private val _power = MutableStateFlow<Map<String, PowerResult>>(emptyMap())
+    /** Remote power actions in flight / their result, by device id. */
+    val power: StateFlow<Map<String, PowerResult>> = _power
+    private val _terminalData = MutableSharedFlow<TerminalData>(extraBufferCapacity = 512)
+    /** Ephemeral terminal.data events from the PC's remote terminal. */
+    val terminalData: SharedFlow<TerminalData> = _terminalData
+
     // Realtime-driven reloads are coalesced (about 1 s) and never cancelled by newer events.
     private val historyCo = Coalescer(scope, 1000) { _detail.value?.sessionId?.let { fetchHistory(it) } }
     private val fileMapCo = Coalescer(scope, 1000) { _detail.value?.takeIf { it.fileMap != null }?.sessionId?.let { fetchFileMap(it) } }
@@ -379,6 +419,9 @@ class BambooStore(
         _approvals.value = emptyList()
         _notifications.value = emptyList()
         _detail.value = null
+        _approvalsHistory.value = ApprovalsHistoryView()
+        _power.value = emptyMap()
+        _pcBusy.value = emptySet()
         _error.value = null
         _loaded.value = false
     }
@@ -1041,6 +1084,168 @@ class BambooStore(
         _file.value = null
     }
 
+    // ---------------------------------------------------------------- approvals history (Pending / Resolved / All)
+
+    /** Loads the Approvals screen's list for [filter] (GET /v1/approvals?status=). */
+    fun loadApprovals(filter: ApprovalFilter, force: Boolean = false) {
+        val cur = _approvalsHistory.value
+        if (!force && cur.filter == filter && (cur.loading || cur.loaded)) return
+        _approvalsHistory.value = cur.copy(filter = filter, loading = true, error = if (cur.filter == filter) cur.error else null)
+        scope.launch {
+            try {
+                val items = api.approvalsByStatus(filter.status)
+                _approvalsHistory.update { if (it.filter == filter) ApprovalsHistoryView(filter, loading = false, loaded = true, items = items) else it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = contentErrorOf(e, "Could not load approvals.")
+                _approvalsHistory.update { if (it.filter == filter) it.copy(loading = false, error = err) else it }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- PC settings (approval mode, keep awake)
+
+    private fun pcBusy(deviceId: String, busy: Boolean) {
+        _pcBusy.update { if (busy) it + deviceId else it - deviceId }
+    }
+
+    /** Applies [f] to a device wherever it is shown (devices list and overview), so settings update at once. */
+    private fun updateDeviceEverywhere(id: String, f: (Device) -> Device) {
+        _devices.update { list -> list.map { if (it.id == id) f(it) else it } }
+        _overview.update { o -> o?.copy(desktops = o.desktops.map { if (it.id == id) f(it) else it }) }
+    }
+
+    /** Sets the PC's approval mode remotely (SET_APPROVAL_MODE {mode}); 'ask', 'edits' or 'all'. */
+    fun setApprovalMode(pc: Device, mode: String) {
+        val previous = pc.settings?.approvalMode ?: "ask"
+        if (mode == previous) return
+        updateDeviceEverywhere(pc.id) { it.copy(settings = (it.settings ?: DeviceSettings()).copy(approvalMode = mode)) }
+        pcBusy(pc.id, true)
+        scope.launch {
+            runCatching { api.deviceCommand(pc.id, "SET_APPROVAL_MODE", buildJsonObject { put("mode", mode) }) }
+                .onSuccess { res -> if (!res.deviceOnline) _messages.tryEmit("${pc.name} is offline. The approval mode changes if it reconnects within 5 minutes.") }
+                .onFailure { e ->
+                    updateDeviceEverywhere(pc.id) { it.copy(settings = (it.settings ?: DeviceSettings()).copy(approvalMode = previous)) }
+                    _messages.tryEmit(commandError("Could not change the approval mode", e))
+                }
+            pcBusy(pc.id, false)
+        }
+    }
+
+    /** Toggles the PC's keep-awake ☕ remotely (SET_KEEP_AWAKE {on}). */
+    fun setKeepAwake(pc: Device, on: Boolean) {
+        val previous = pc.settings?.keepAwake ?: false
+        if (on == previous) return
+        updateDeviceEverywhere(pc.id) { it.copy(settings = (it.settings ?: DeviceSettings()).copy(keepAwake = on)) }
+        pcBusy(pc.id, true)
+        scope.launch {
+            runCatching { api.deviceCommand(pc.id, "SET_KEEP_AWAKE", buildJsonObject { put("on", on) }) }
+                .onSuccess { res -> if (!res.deviceOnline) _messages.tryEmit("${pc.name} is offline. Keep-awake changes if it reconnects within 5 minutes.") }
+                .onFailure { e ->
+                    updateDeviceEverywhere(pc.id) { it.copy(settings = (it.settings ?: DeviceSettings()).copy(keepAwake = previous)) }
+                    _messages.tryEmit(commandError("Could not change keep-awake", e))
+                }
+            pcBusy(pc.id, false)
+        }
+    }
+
+    // ---------------------------------------------------------------- developer options (Power, Terminal, Research)
+
+    fun setDeveloperOptions(on: Boolean) {
+        store.developerOptions = on
+        _developerOptions.value = on
+    }
+
+    /** Research → Ask AI: the user's own Gemini key, kept only in the phone's encrypted prefs (never sent to BambooKit). */
+    fun geminiKey(): String? = store.geminiApiKey
+    fun setGeminiKey(key: String?) {
+        store.geminiApiKey = key
+    }
+
+    /**
+     * Asks an online PC to sleep, shut down or lock (POWER {action}). The PC performs it after a 10-second
+     * cancelable countdown. 403 REMOTE_CONTROL_DISABLED means the PC's "Allow remote control" switch is off.
+     */
+    fun power(pc: Device, action: String) {
+        _power.update { it + (pc.id to PowerResult(pc.id, action, busy = true)) }
+        scope.launch {
+            runCatching { api.deviceCommand(pc.id, "POWER", buildJsonObject { put("action", action) }) }
+                .onSuccess { res ->
+                    _power.update { it + (pc.id to PowerResult(pc.id, action, busy = false, done = true)) }
+                    _messages.tryEmit(
+                        if (!res.deviceOnline) "${pc.name} is offline. ${powerLabel(action)} runs if it reconnects within 5 minutes."
+                        else "${powerLabel(action)} on ${pc.name} in 10 seconds (cancelable on the PC).",
+                    )
+                }
+                .onFailure { e ->
+                    val msg = if ((e as? ApiException)?.code == "REMOTE_CONTROL_DISABLED")
+                        "Turn on 'Allow remote control' on ${pc.name} first (This PC → Allow this PC to be controlled remotely)."
+                    else commandError("Could not ${powerLabel(action).lowercase()} ${pc.name}", e)
+                    _power.update { it + (pc.id to PowerResult(pc.id, action, busy = false, error = msg)) }
+                }
+        }
+    }
+
+    fun clearPower(deviceId: String) {
+        _power.update { it - deviceId }
+    }
+
+    // ---------------------------------------------------------------- remote terminal
+
+    /** Terminal commands in flight: command id to (device id, type). */
+    private val terminalOps = HashMap<String, Pair<String, String>>()
+    private val _terminalOpened = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 8)
+    /** Emits (commandId, termId) when the PC opens a terminal. */
+    val terminalOpened: SharedFlow<Pair<String, String>> = _terminalOpened
+
+    /** Opens a remote terminal on [pc] (TERMINAL_OPEN {cols,rows}); the termId arrives via [terminalOpened] / the command result. */
+    fun terminalOpen(pc: Device, cols: Int, rows: Int, onResult: (Result<String>) -> Unit) {
+        desktopMissing(pc.id, DesktopFeature.RemoteTerminal)?.let { r ->
+            onResult(Result.failure(Exception("Update BambooKit Desktop on ${pc.name} to use the remote terminal.")))
+            return
+        }
+        scope.launch {
+            runCatching { api.deviceCommand(pc.id, "TERMINAL_OPEN", buildJsonObject { put("cols", cols); put("rows", rows) }) }
+                .onSuccess { res ->
+                    // Newer desktops return the termId in the command result immediately.
+                    val termId = (res.data.result as? JsonObject)?.get("termId")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                    if (!termId.isNullOrBlank()) onResult(Result.success(termId))
+                    else {
+                        terminalOps[res.data.id] = pc.id to "TERMINAL_OPEN"
+                        // Wait briefly for command.updated to deliver the termId.
+                        val opened = kotlinx.coroutines.withTimeoutOrNull(15_000) {
+                            terminalOpened.first { it.first == res.data.id }.second
+                        }
+                        terminalOps.remove(res.data.id)
+                        if (!opened.isNullOrBlank()) onResult(Result.success(opened))
+                        else onResult(Result.failure(Exception("${pc.name} didn't open a terminal. Make sure BambooKit Desktop is up to date.")))
+                    }
+                }
+                .onFailure { e ->
+                    onResult(Result.failure(terminalException(pc, e)))
+                }
+        }
+    }
+
+    private fun terminalException(pc: Device, e: Throwable): Exception = when ((e as? ApiException)?.code) {
+        "REMOTE_CONTROL_DISABLED" -> Exception("Turn on 'Allow remote control' on ${pc.name} first (This PC → Allow this PC to be controlled remotely).")
+        "DESKTOP_UPDATE_REQUIRED" -> Exception("Update BambooKit Desktop on ${pc.name} to use the remote terminal.")
+        else -> Exception(commandError("Terminal error", e))
+    }
+
+    fun terminalInput(pc: Device, termId: String, data: String) = scope.launch {
+        runCatching { api.deviceCommand(pc.id, "TERMINAL_INPUT", buildJsonObject { put("termId", termId); put("data", data) }) }
+    }
+
+    fun terminalResize(pc: Device, termId: String, cols: Int, rows: Int) = scope.launch {
+        runCatching { api.deviceCommand(pc.id, "TERMINAL_RESIZE", buildJsonObject { put("termId", termId); put("cols", cols); put("rows", rows) }) }
+    }
+
+    fun terminalClose(pc: Device, termId: String) = scope.launch {
+        runCatching { api.deviceCommand(pc.id, "TERMINAL_CLOSE", buildJsonObject { put("termId", termId) }) }
+    }
+
     private fun track(cmd: PendingCommand) {
         _detail.update { d -> d?.copy(commands = (d.commands.filterNot { it.id == cmd.id } + cmd).takeLast(10)) }
     }
@@ -1154,6 +1359,8 @@ class BambooStore(
 
     private suspend fun refreshApprovals() {
         runCatching { _approvals.value = api.approvals() }
+        // Keep the Approvals screen's filtered list current when something is answered elsewhere.
+        if (_approvalsHistory.value.loaded) loadApprovals(_approvalsHistory.value.filter, force = true)
         _detail.value?.let { d -> _detail.update { it?.copy(approvals = _approvals.value.filter { a -> a.sessionId == d.sessionId }) } }
         // The history carries every approval of the session (answered ones too) for the timeline.
         if (_detail.value != null) loadHistory(delayMs = 1500)
@@ -1435,11 +1642,23 @@ class BambooStore(
                     val o = event.payload
                     if (o.str("kind") == "web") _webOnline.value = o.bool("online")
                 }
+                "terminal.data" -> {
+                    runCatching { json.decodeFromJsonElement<TerminalData>(event.payload) }.getOrNull()?.let { _terminalData.tryEmit(it) }
+                }
                 "command.updated" -> {
                     val c = json.decodeFromJsonElement<CommandUpdate>(event.payload)
                     _detail.update { d ->
                         if (d == null || d.commands.none { it.id == c.id }) d
                         else d.copy(commands = d.commands.map { if (it.id == c.id) it.copy(status = c.status, error = c.error) else it })
+                    }
+                    terminalOps[c.id]?.let { (_, _) ->
+                        if (c.status != "PENDING") {
+                            terminalOps.remove(c.id)
+                            if (c.status == "SUCCEEDED") {
+                                val termId = (c.result as? JsonObject)?.get("termId")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                                if (!termId.isNullOrBlank()) _terminalOpened.tryEmit(c.id to termId)
+                            }
+                        }
                     }
                     providerOps[c.id]?.let { (deviceId, providerId, type) ->
                         if (c.status != "PENDING") {
@@ -1488,7 +1707,14 @@ class BambooStore(
                     a?.takeIf { StatsFormat.eventMessage(it) != null }?.let { _achievementUnlocked.tryEmit(it) }
                     if (_stats.value.stats != null || _stats.value.loading) loadStats()
                 }
-                "device.status", "device.registered", "device.updated", "device.revoked", "device.unlinked", "pairing.completed" -> scope.launch {
+                "device.updated" -> {
+                    // Ephemeral settings change: apply it at once (approval mode / keep-awake stay in sync both ways).
+                    val u = runCatching { json.decodeFromJsonElement<DeviceUpdated>(event.payload) }.getOrNull()
+                    val id = u?.deviceId?.takeIf { it.isNotBlank() } ?: event.deviceId
+                    if (id != null && u?.settings != null) updateDeviceEverywhere(id) { it.copy(settings = u.settings) }
+                    else scope.launch { runCatching { _devices.value = api.devices() }; refreshOverviewSoon() }
+                }
+                "device.status", "device.registered", "device.revoked", "device.unlinked", "pairing.completed" -> scope.launch {
                     // Off the event collector: a slow request must never hold up (and drop) later events.
                     val wasOnline = _devices.value.associate { it.id to it.online }
                     runCatching { _devices.value = api.devices() }
@@ -1627,7 +1853,15 @@ fun commandLabel(type: String): String = when (type) {
 private data class DiffPayload(val files: List<ChangedFile> = emptyList())
 
 @kotlinx.serialization.Serializable
-private data class CommandUpdate(val id: String, val type: String, val status: String, val error: String? = null)
+private data class CommandUpdate(val id: String, val type: String, val status: String, val error: String? = null, val result: kotlinx.serialization.json.JsonElement? = null)
+
+/** "Sleep", "Shut down" or "Lock". */
+fun powerLabel(action: String): String = when (action) {
+    "sleep" -> "Sleep"
+    "shutdown" -> "Shut down"
+    "lock" -> "Lock"
+    else -> action.replaceFirstChar { it.uppercase() }
+}
 
 /** The statistics with one project's status changed (counts follow). */
 fun ProfileStats.withProjectStatus(id: String, status: String): ProfileStats {

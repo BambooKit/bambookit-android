@@ -65,6 +65,19 @@ class SecureStore(context: Context) {
     fun profileSetupOffered(userId: String): Boolean = prefs.getBoolean("profile_setup_$userId", false)
     fun markProfileSetupOffered(userId: String) = prefs.edit().putBoolean("profile_setup_$userId", true).apply()
 
+    /** Developer options (Power, Terminal, Research). Off by default; opt-in from Profile. */
+    var developerOptions: Boolean
+        get() = prefs.getBoolean("developer_options", false)
+        set(value) = prefs.edit().putBoolean("developer_options", value).apply()
+
+    /**
+     * The user's own Google AI Studio (Gemini) API key for Research → Ask AI. Stored only here, in the
+     * phone's encrypted prefs; it is never sent to BambooKit and never logged. Null when unset.
+     */
+    var geminiApiKey: String?
+        get() = prefs.getString("gemini_api_key", null)?.takeIf { it.isNotBlank() }
+        set(value) = prefs.edit().apply { if (value.isNullOrBlank()) remove("gemini_api_key") else putString("gemini_api_key", value.trim()) }.apply()
+
     /**
      * Sign-out: removes the auth session, this phone's device id, the realtime resume point and any
      * half-finished Google sign-in. Keeps the installation id and app settings (such as App lock).
