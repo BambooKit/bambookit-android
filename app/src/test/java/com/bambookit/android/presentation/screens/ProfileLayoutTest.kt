@@ -6,14 +6,27 @@ import org.junit.Test
 
 class ProfileLayoutTest {
     @Test
-    fun `profile header comes first, then statistics`() {
+    fun `profile header comes first, then achievements, then statistics`() {
         assertEquals(ProfileSection.Header, PROFILE_SECTIONS[0])
-        assertEquals(ProfileSection.Statistics, PROFILE_SECTIONS[1])
+        assertEquals(ProfileSection.Achievements, PROFILE_SECTIONS[1])
+        assertEquals(ProfileSection.Statistics, PROFILE_SECTIONS[2])
     }
 
     @Test
-    fun `plan comes right after the header and statistics`() {
-        assertEquals(ProfileSection.Plan, PROFILE_SECTIONS[2])
+    fun `achievements are above statistics (the owner wants them from up side)`() {
+        assertTrue(PROFILE_SECTIONS.indexOf(ProfileSection.Achievements) < PROFILE_SECTIONS.indexOf(ProfileSection.Statistics))
+    }
+
+    @Test
+    fun `plan comes right after the header, achievements and statistics`() {
+        assertEquals(ProfileSection.Plan, PROFILE_SECTIONS[3])
+    }
+
+    @Test
+    fun `developer options are a settings section after statistics and before account`() {
+        val dev = PROFILE_SECTIONS.indexOf(ProfileSection.DeveloperOptions)
+        assertTrue(dev > PROFILE_SECTIONS.indexOf(ProfileSection.Statistics))
+        assertTrue(dev < PROFILE_SECTIONS.indexOf(ProfileSection.Account))
     }
 
     @Test
