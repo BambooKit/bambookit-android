@@ -165,20 +165,23 @@ private fun providerLabel(provider: String?): String = when (provider) {
 private const val PLAN_ITEM_KEY = "plan"
 
 /** Sections of the Profile screen, top to bottom. */
-enum class ProfileSection { Header, Statistics, Plan, Notifications, AppLock, AppUpdates, AiProviders, Account, SignOut, DangerZone, ProjectsManaged }
+enum class ProfileSection { Header, Achievements, Statistics, Plan, Notifications, AppLock, AppUpdates, AiProviders, DeveloperOptions, Account, SignOut, DangerZone, ProjectsManaged }
 
 /**
- * Profile header (photo, nickname, email) first, then statistics and achievements, the plan (Free / Pro), then the settings and account
- * actions. Projects managed (counts and the project list) are at the bottom.
+ * Profile header (photo, nickname, email) first, then achievements right under it (the owner wants them "from up
+ * side"), then the statistics, the plan (Free / Pro), then the settings and account actions. Projects managed
+ * (counts and the project list) are at the very bottom.
  */
 val PROFILE_SECTIONS: List<ProfileSection> = listOf(
     ProfileSection.Header,
+    ProfileSection.Achievements,
     ProfileSection.Statistics,
     ProfileSection.Plan,
     ProfileSection.Notifications,
     ProfileSection.AppLock,
     ProfileSection.AppUpdates,
     ProfileSection.AiProviders,
+    ProfileSection.DeveloperOptions,
     ProfileSection.Account,
     ProfileSection.SignOut,
     ProfileSection.DangerZone,
@@ -195,6 +198,7 @@ fun ProfileScreen(
     val planView by store.plan.collectAsState()
     val projects by store.projects.collectAsState()
     var showUpdates by remember { mutableStateOf(false) }
+    var devScreen by remember { mutableStateOf<DevScreen?>(null) }
     var achievementFilter by rememberSaveable { mutableStateOf(com.bambookit.android.data.StatsFormat.Filter.All) }
     val session by store.session.collectAsState()
     val context = LocalContext.current
@@ -213,6 +217,12 @@ fun ProfileScreen(
     if (showUpdates) {
         UpdateScreen(updater, onBack = { showUpdates = false })
         return
+    }
+    when (devScreen) {
+        DevScreen.Power -> { PowerScreen(store, onBack = { devScreen = null }); return }
+        DevScreen.Terminal -> { TerminalScreen(store, onBack = { devScreen = null }); return }
+        DevScreen.Research -> { ResearchScreen(store, onBack = { devScreen = null }); return }
+        null -> Unit
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -307,8 +317,11 @@ fun ProfileScreen(
                             BkCard { NicknameEditor(store, account) }
                         }
                     }
+                    ProfileSection.Achievements -> {
+                        profileAchievements(stats, store, achievementFilter) { achievementFilter = it }
+                    }
                     ProfileSection.Statistics -> {
-                        profileStats(stats, store, achievementFilter) { achievementFilter = it }
+                        profileStats(stats, store)
                     }
                     ProfileSection.Plan -> {
                         item(key = PLAN_ITEM_KEY) { PlanSection(store, ads, planView) }
@@ -336,6 +349,17 @@ fun ProfileScreen(
                         item {
                             SectionTitle("AI providers")
                             AiProvidersSection(store, onOpen = { providersFor = it })
+                        }
+                    }
+                    ProfileSection.DeveloperOptions -> {
+                        item {
+                            SectionTitle("Developer options")
+                            DeveloperOptionsSection(
+                                store,
+                                onPower = { devScreen = DevScreen.Power },
+                                onTerminal = { devScreen = DevScreen.Terminal },
+                                onResearch = { devScreen = DevScreen.Research },
+                            )
                         }
                     }
                     ProfileSection.Account -> {

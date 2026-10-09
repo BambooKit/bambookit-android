@@ -98,10 +98,7 @@ private fun recent(iso: String?): Boolean = runCatching { Duration.between(Insta
  * GET /v1/me/stats only (0 when there is nothing yet). Projects managed are shown separately, at the bottom
  * of the screen ([profileProjects]).
  */
-fun LazyListScope.profileStats(
-    view: StatsView, store: BambooStore,
-    filter: StatsFormat.Filter = StatsFormat.Filter.All, onFilter: (StatsFormat.Filter) -> Unit = {},
-) {
+fun LazyListScope.profileStats(view: StatsView, store: BambooStore) {
     val st = view.stats
     val err = view.error
     if (st == null) {
@@ -177,7 +174,20 @@ fun LazyListScope.profileStats(
         }
     }
 
-    // ---- achievements
+    item {
+        st.timeZone?.let { Text("Times are counted in $it.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = Space.xs)) }
+    }
+}
+
+/**
+ * Achievements — shown at the TOP of the Profile screen, right under the header and above the statistics
+ * (the owner wants "achievements from up side"). Real data from GET /v1/me/stats only.
+ */
+fun LazyListScope.profileAchievements(
+    view: StatsView, store: BambooStore,
+    filter: StatsFormat.Filter = StatsFormat.Filter.All, onFilter: (StatsFormat.Filter) -> Unit = {},
+) {
+    val st = view.stats ?: return
     val summary = StatsFormat.summaryOf(st.achievements, st.achievementSummary)
     val fromServer = st.achievementSummary != null
     item {
@@ -195,9 +205,6 @@ fun LazyListScope.profileStats(
     items(shown, key = { "a:" + it.id }) { a ->
         AchievementRow(a)
         Spacer(Modifier.height(Space.s))
-    }
-    item {
-        st.timeZone?.let { Text("Times are counted in $it.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = Space.xs)) }
     }
 }
 
