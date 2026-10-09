@@ -5,6 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
+import androidx.browser.customtabs.CustomTabsIntent
+import com.bambookit.android.data.Config
 import androidx.fragment.app.FragmentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -297,13 +300,31 @@ private fun Root(app: BambooKitApp, incoming: MutableStateFlow<Intent?>) {
     }
 
     if (session == null) {
+        var googleError by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(Unit) {
             showProfile = false
             // Also when the sign-in expired on its own: stop realtime and clear this phone's signed-in state,
             // so the next sign-in starts cleanly.
             store.signOut(keepPendingSignIn = true)
         }
-        LoginScreen(app.auth, onGoogle = {}, googleAvailable = false)
+        // Finish a Google sign-in when the browser returns to bambookit://auth-callback (shared Supabase account).
+        LaunchedEffect(intent) {
+            val uri = intent?.data
+            if (uri != null && uri.scheme == "bambookit" && uri.host == "auth-callback") {
+                incoming.value = null
+                runCatching { app.auth.completeOAuth(uri) }.onFailure { googleError = it.message ?: "Google sign-in failed" }
+            }
+        }
+        LaunchedEffect(googleError) { googleError?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show(); googleError = null } }
+        LoginScreen(
+            app.auth,
+            onGoogle = {
+                val url = app.auth.googleAuthorizeUrl()
+                runCatching { CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, url) }
+                    .recoverCatching { context.startActivity(Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            },
+            googleAvailable = Config.authConfigured,
+        )
         return
     }
     val accountName = profile.account?.name ?: session?.name
