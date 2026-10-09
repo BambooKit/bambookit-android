@@ -190,13 +190,21 @@ private fun DetailStatus(a: Approval, view: ApprovalDetailView?, pcName: String,
             Spacer(Modifier.width(6.dp))
             Text("Reading the full request from $pcName…", color = TextMuted, fontSize = 11.sp)
         }
-        err != null -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Space.s)) {
-            Text(
-                "${errorTitle(err, pcName, "Couldn't read the full request")}. ${err.update?.let { r -> "Installed ${r.currentVersion ?: "unknown"}, needs ${r.requiredVersion} to show the full command and diff. Showing the summary." } ?: if (err.desktopOutdated) "Update BambooKit Desktop to see the full command and diff here." else "Showing the summary."}",
-                color = StatusWarning, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.weight(1f),
-            )
-            InfoButton(err.diagnosis, onRetry, tint = StatusWarning, title = "Couldn't read the full request")
-            TextButton(onClick = onRetry, enabled = !view.loading) { Text(if (view.loading) "Retrying…" else "Retry", fontSize = 12.sp) }
+        err != null -> {
+            // The full command/diff is only "shown as a summary" for a genuine version gap. A plain PC error
+            // (no version mismatch) shows the real error instead; and if the full detail is actually present we
+            // never claim to be showing only the summary.
+            val hasFull = view.detail?.command() != null || view.detail?.diff() != null
+            val message = when {
+                err.update != null -> "${errorTitle(err, pcName, "Couldn't read the full request")}. Installed ${err.update.currentVersion ?: "unknown"}, needs ${err.update.requiredVersion} to show the full command and diff."
+                err.versionGap -> "${errorTitle(err, pcName, "Couldn't read the full request")}. Update BambooKit Desktop to see the full command and diff here."
+                else -> "${errorTitle(err, pcName, "Couldn't read the full request")}. ${err.message}"
+            } + if (err.versionGap && !hasFull) " Showing the summary." else ""
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = Space.s)) {
+                Text(message, color = StatusWarning, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.weight(1f))
+                InfoButton(err.diagnosis, onRetry, tint = StatusWarning, title = "Couldn't read the full request")
+                TextButton(onClick = onRetry, enabled = !view.loading) { Text(if (view.loading) "Retrying…" else "Retry", fontSize = 12.sp) }
+            }
         }
     }
 }
