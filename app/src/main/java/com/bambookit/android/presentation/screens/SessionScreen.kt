@@ -94,11 +94,18 @@ import com.bambookit.android.presentation.theme.TextPrimary
 import com.bambookit.android.presentation.theme.TextSecondary
 import com.bambookit.android.presentation.theme.UserBubble
 
-/** Segments of the session screen, in display order. */
+/**
+ * Segments of the session screen, in display order. Chat comes first (contract §9), then Summary,
+ * then the rest. A session with chat content opens on Chat; one without opens on Summary.
+ */
 internal enum class SessionTabId(val label: String) {
-    Summary("Summary"), Todos("Todos"), Prompts("Prompts"), Timeline("Timeline"), Changes("Changes"),
-    Files("Files"), Project("Project"), Diagram("Diagram"), Chat("Chat"),
+    Chat("Chat"), Summary("Summary"), Todos("Todos"), Prompts("Prompts"), Timeline("Timeline"),
+    Changes("Changes"), Files("Files"), Project("Project"), Diagram("Diagram"),
 }
+
+/** The tab a session opens on: Chat when it has chat content, else Summary. */
+internal fun defaultSessionTab(hasChatContent: Boolean): SessionTabId =
+    if (hasChatContent) SessionTabId.Chat else SessionTabId.Summary
 
 /**
  * One session, view only. Session content lives on the user's PC; the API relays it live and keeps a
@@ -112,7 +119,9 @@ fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack
     val devices by store.devices.collectAsState()
     val file by store.file.collectAsState()
     val versions by store.versions.collectAsState()
-    var tab by rememberSaveable { mutableStateOf(SessionTabId.Summary) }
+    var tab by rememberSaveable { mutableStateOf(SessionTabId.Chat) }
+    // Pick the opening tab once, after the chat has been read: Chat when there's chat content, else Summary.
+    var defaultChosen by rememberSaveable(sessionId) { mutableStateOf(false) }
     var focusPrompt by remember { mutableStateOf<String?>(null) }
     var openChange by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmStop by remember { mutableStateOf(false) }
@@ -135,6 +144,13 @@ fun SessionScreen(store: BambooStore, sessionId: String, ads: AdsManager, onBack
         context.findActivity()?.let { ads.onTransition(it, AdPlacements.Transition.LeftFileViewer, pendingRequests = pending, locked = locked) }
     }
     val errorOnly = d == null || (s == null && d.history.data == null && d.error != null && !d.loading && !d.history.loading)
+    // Open on Chat when the session has chat content, else Summary — decided once the chat has been read.
+    LaunchedEffect(d?.contentLoaded, d?.contentError, d?.parts?.isNotEmpty(), defaultChosen) {
+        if (!defaultChosen && d != null && (d.contentLoaded || d.contentError != null)) {
+            tab = defaultSessionTab(d.parts.isNotEmpty())
+            defaultChosen = true
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         ScreenTopBar(
@@ -314,7 +330,8 @@ internal fun errorTitle(err: ContentError, pcTitle: String, fallback: String): S
     "DESKTOP_TIMEOUT" -> "$pcTitle didn't answer in time"
     "TIMEOUT" -> "This is taking too long"
     "DESKTOP_OUTDATED" -> "Update BambooKit Desktop on your PC"
-    "DESKTOP_ERROR" -> "$pcTitle couldn't do this"
+    // A plain PC error (not a version gap): say what actually happened, not the scary "couldn't do this".
+    "DESKTOP_ERROR" -> "$pcTitle reported an error"
     "NETWORK" -> "Can't reach BambooKit"
     else -> fallback
 }
