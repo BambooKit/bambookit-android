@@ -104,13 +104,13 @@ fun DevicesScreen(store: BambooStore, pairStatus: String?, onScan: () -> Unit, o
                 BkCard { Text("No PC is paired with this phone yet.", color = TextSecondary, fontSize = 13.sp) }
             }
             items(myDesktops, key = { it.id }) { d ->
-                DesktopCard(d, onRename = { renaming = d }, onDisconnect = { confirmUnlink = d }, onRevoke = { confirmRevoke = d })
+                DesktopCard(store, d, onRename = { renaming = d }, onDisconnect = { confirmUnlink = d }, onRevoke = { confirmRevoke = d })
                 Spacer(Modifier.height(Space.s))
             }
             if (otherDesktops.isNotEmpty()) {
                 item { SectionTitle("Other PCs on this account") }
                 items(otherDesktops, key = { it.id }) { d ->
-                    DesktopCard(d, onRename = { renaming = d }, onDisconnect = null, onRevoke = { confirmRevoke = d })
+                    DesktopCard(store, d, onRename = { renaming = d }, onDisconnect = null, onRevoke = { confirmRevoke = d })
                     Spacer(Modifier.height(Space.s))
                 }
             }
@@ -185,7 +185,7 @@ fun DevicesScreen(store: BambooStore, pairStatus: String?, onScan: () -> Unit, o
 }
 
 @Composable
-private fun DesktopCard(d: Device, onRename: () -> Unit, onDisconnect: (() -> Unit)?, onRevoke: () -> Unit) {
+private fun DesktopCard(store: BambooStore, d: Device, onRename: () -> Unit, onDisconnect: (() -> Unit)?, onRevoke: () -> Unit) {
     BkCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconTile(Icons.Filled.DesktopWindows, tint = if (d.online) TextPrimary else TextMuted)
@@ -196,6 +196,7 @@ private fun DesktopCard(d: Device, onRename: () -> Unit, onDisconnect: (() -> Un
             }
             OnlineChip(d.online)
         }
+        PcSettingsControls(store, d)
         d.activeSession?.let {
             Spacer(Modifier.height(Space.s))
             Row(

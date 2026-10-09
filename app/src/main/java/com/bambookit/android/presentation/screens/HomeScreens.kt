@@ -36,11 +36,16 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -65,6 +70,10 @@ import com.bambookit.android.data.LinkState
 import com.bambookit.android.data.NotificationItem
 import com.bambookit.android.data.Project
 import com.bambookit.android.data.Session
+import com.bambookit.android.presentation.theme.BambooBorder
+import com.bambookit.android.presentation.theme.BambooBorderStrong
+import com.bambookit.android.presentation.theme.BambooGreenSubtle
+import com.bambookit.android.presentation.theme.BambooSurface
 import com.bambookit.android.presentation.theme.BambooSurfaceElevated
 import com.bambookit.android.presentation.theme.CodeBlockBackground
 import com.bambookit.android.presentation.theme.StatusFailed
@@ -126,8 +135,11 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
     val refreshing by store.refreshing.collectAsState()
     val notifications by store.notifications.collectAsState()
     val clear by store.clearActivity.collectAsState()
+    val stats by store.stats.collectAsState()
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     val inlineEvery = inlineAdInterval(AdPlacements.Screen.Home)
+    // "Files changed (24h)" is the real number from GET /v1/me/stats (contract §5).
+    LaunchedEffect(Unit) { store.loadStats() }
 
     if (confirmClear) {
         AlertDialog(
@@ -156,7 +168,7 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.s), modifier = Modifier.fillMaxWidth().padding(top = Space.xs)) {
                     StatTile("Approvals waiting", o.pendingApprovals, Icons.Filled.VerifiedUser, Modifier.weight(1f), highlight = o.pendingApprovals > 0, onClick = onApprovals)
                     StatTile("Agents working", o.activeSessions.size, Icons.Filled.Bolt, Modifier.weight(1f))
-                    StatTile("Files changed (24h)", o.recentChangedFiles, Icons.Filled.Description, Modifier.weight(1f))
+                    StatTile("Files changed (24h)", stats.stats?.filesChanged24h ?: o.recentChangedFiles, Icons.Filled.Description, Modifier.weight(1f))
                 }
             }
 
@@ -176,7 +188,7 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
                 }
             }
             items(o.desktops, key = { "pc:" + it.id }) { d ->
-                PcCard(d, onOpenSession = onOpenSession)
+                PcCard(store, d, onOpenSession = onOpenSession)
                 Spacer(Modifier.height(Space.s))
             }
 
@@ -230,7 +242,7 @@ fun HomeScreen(store: BambooStore, onOpenSession: (String) -> Unit, onPair: () -
 }
 
 @Composable
-private fun PcCard(d: Device, onOpenSession: (String) -> Unit) {
+private fun PcCard(store: BambooStore, d: Device, onOpenSession: (String) -> Unit) {
     BkCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconTile(Icons.Filled.DesktopWindows, tint = if (d.online) TextPrimary else TextMuted)
@@ -244,6 +256,7 @@ private fun PcCard(d: Device, onOpenSession: (String) -> Unit) {
             }
             OnlineChip(d.online)
         }
+        PcSettingsControls(store, d)
         d.activeSession?.let { a ->
             Spacer(Modifier.height(Space.m))
             Row(
@@ -262,6 +275,65 @@ private fun PcCard(d: Device, onOpenSession: (String) -> Unit) {
             }
         }
     }
+}
+
+/** Human label for an approval mode. */
+internal fun approvalModeLabel(mode: String): String = when (mode) {
+    "edits" -> "Auto edits"
+    "all" -> "Auto-approve"
+    else -> "Ask"
+}
+
+/**
+ * Per-PC controls shown on each PC card: the approval mode (Ask / Auto edits / Auto-approve) and the
+ * keep-awake ☕ toggle. Reflects the PC's live settings and changes them with SET_APPROVAL_MODE /
+ * SET_KEEP_AWAKE. Shown only when the PC reports settings (newer desktop + server).
+ */
+@Composable
+fun PcSettingsControls(store: BambooStore, d: Device) {
+    val settings = d.settings ?: return
+    val busyIds by store.pcBusy.collectAsState()
+    val busy = d.id in busyIds
+    Spacer(Modifier.height(Space.s))
+    HorizontalDivider(color = BambooBorder)
+    Spacer(Modifier.height(Space.s))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.Shield, null, tint = TextSecondary, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Approvals", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        // Keep-awake ☕ toggle (same idea as the desktop cup).
+        IconButton(onClick = { if (!busy) store.setKeepAwake(d, !settings.keepAwake) }, enabled = d.online && !busy, modifier = Modifier.size(34.dp)) {
+            Icon(
+                Icons.Filled.Coffee,
+                if (settings.keepAwake) "Keep-awake on, tap to turn off" else "Keep-awake off, tap to turn on",
+                tint = if (settings.keepAwake) StatusSuccess else TextMuted, modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+        listOf("ask", "edits", "all").forEach { mode ->
+            val selected = settings.approvalMode == mode
+            FilterChip(
+                selected = selected, onClick = { if (d.online && !busy) store.setApprovalMode(d, mode) }, enabled = d.online && !busy,
+                label = { Text(approvalModeLabel(mode), fontSize = 12.sp, maxLines = 1) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = BambooGreenSubtle, selectedLabelColor = TextPrimary,
+                    containerColor = BambooSurface, labelColor = TextSecondary,
+                ),
+                border = FilterChipDefaults.filterChipBorder(enabled = d.online, selected = selected, borderColor = BambooBorder, selectedBorderColor = BambooBorderStrong),
+            )
+        }
+    }
+    val note = when (settings.approvalMode) {
+        "all" -> "Auto-approve runs edits and commands without asking — only in projects you trust."
+        "edits" -> "Edits apply automatically; commands still ask."
+        else -> "Every edit and command asks for your approval."
+    }
+    Text(
+        note, color = if (settings.approvalMode == "all") StatusWarning else TextMuted, fontSize = 11.sp, lineHeight = 15.sp,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+    if (!d.online) Text("Changes apply when ${d.name} is back online.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
 }
 
 @Composable
@@ -451,32 +523,103 @@ private fun ProjectHeader(p: Project, pc: Device?, locked: Boolean = false, onNe
 
 // ================================================================== approvals
 
+/** "Approved", "Rejected", "Answered", "Auto" or "Expired" for a resolved request. */
+internal fun approvalStatusLabel(a: Approval): String = when {
+    a.isAuto -> "Auto"
+    a.status == "APPROVED" -> "Approved"
+    a.status == "REJECTED" -> "Rejected"
+    a.status == "ANSWERED" -> "Answered"
+    a.status == "EXPIRED" -> "Expired"
+    else -> a.status.lowercase().replaceFirstChar { it.uppercase() }
+}
+
+internal fun approvalStatusColors(a: Approval): Pair<androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> = when {
+    a.isAuto -> StatusRunning to StatusRunningTint
+    a.status == "APPROVED" -> StatusSuccess to com.bambookit.android.presentation.theme.StatusSuccessTint
+    a.status == "REJECTED" -> StatusFailed to StatusFailedTint
+    a.status == "ANSWERED" -> StatusRunning to StatusRunningTint
+    else -> TextMuted to com.bambookit.android.presentation.theme.NeutralTint
+}
+
+/** "approved from your phone", "answered on the PC", "auto-approved"… */
+internal fun resolvedByLabel(a: Approval): String? = when (a.resolvedBy) {
+    "phone" -> "from your phone"
+    "web" -> "from the web"
+    "pc" -> "on the PC"
+    "auto" -> "automatically"
+    else -> null
+}
+
 @Composable
 fun ApprovalsScreen(store: BambooStore, onOpenSession: (String) -> Unit) {
-    val all by store.approvals.collectAsState()
-    val approvals = all.filter { it.isPending }
+    val view by store.approvalsHistory.collectAsState()
     val devices by store.devices.collectAsState()
-    val loaded by store.loaded.collectAsState()
-    val error by store.error.collectAsState()
-    val refreshing by store.refreshing.collectAsState()
-    RefreshBox(refreshing = refreshing, onRefresh = { store.refreshAll() }) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
-            if (!loaded && approvals.isEmpty() && error != null) item {
-                ErrorState("Couldn't load requests", error ?: "", Icons.Filled.CloudOff, onRetry = { store.refreshAll() }, retrying = refreshing, diagnosis = store.errorDiagnosis.collectAsState().value)
-            } else if (!loaded && approvals.isEmpty()) item { LoadingState("Loading requests…") }
-            else if (approvals.isEmpty()) item {
-                EmptyState(
-                    "Nothing waiting for you",
-                    "Requests appear here when the agent asks before running commands or editing files, or asks you a question. " +
-                        "You'll also get a notification.",
-                    Icons.Filled.VerifiedUser,
+    LaunchedEffect(Unit) { store.loadApprovals(view.filter) }
+    val items = view.items
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = Space.screen, vertical = Space.s), horizontalArrangement = Arrangement.spacedBy(Space.s)) {
+            com.bambookit.android.data.ApprovalFilter.entries.forEach { f ->
+                val selected = view.filter == f
+                FilterChip(
+                    selected = selected, onClick = { store.loadApprovals(f) }, label = { Text(f.label, fontSize = 13.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = BambooGreenSubtle, selectedLabelColor = TextPrimary,
+                        containerColor = BambooSurface, labelColor = TextSecondary,
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(enabled = true, selected = selected, borderColor = BambooBorder, selectedBorderColor = BambooBorderStrong),
                 )
             }
-            items(approvals, key = { it.id }) { a ->
-                Spacer(Modifier.height(Space.s))
-                ApprovalCard(a, store, pcName = devices.firstOrNull { it.id == a.deviceId }?.name, onOpen = { onOpenSession(a.sessionId) })
-            }
-            item { BottomSpacer() }
         }
+        RefreshBox(refreshing = view.loading && view.loaded, onRefresh = { store.loadApprovals(view.filter, force = true) }) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = Space.screen)) {
+                when {
+                    view.error != null && items.isEmpty() -> item {
+                        ErrorState("Couldn't load requests", view.error?.message ?: "", Icons.Filled.CloudOff, onRetry = { store.loadApprovals(view.filter, force = true) }, retrying = view.loading, diagnosis = view.error?.diagnosis)
+                    }
+                    !view.loaded && view.loading -> item { LoadingState("Loading requests…") }
+                    items.isEmpty() -> item {
+                        EmptyState(
+                            if (view.filter == com.bambookit.android.data.ApprovalFilter.Pending) "Nothing waiting for you" else "No requests here",
+                            if (view.filter == com.bambookit.android.data.ApprovalFilter.Pending)
+                                "Requests appear here when the agent asks before running commands or editing files, or asks you a question. You'll also get a notification."
+                            else "Resolved requests from the last 30 days appear here.",
+                            Icons.Filled.VerifiedUser,
+                        )
+                    }
+                }
+                items(items, key = { it.id }) { a ->
+                    Spacer(Modifier.height(Space.s))
+                    if (a.isPending) ApprovalCard(a, store, pcName = devices.firstOrNull { it.id == a.deviceId }?.name, onOpen = { onOpenSession(a.sessionId) })
+                    else ResolvedApprovalCard(a, pcName = devices.firstOrNull { it.id == a.deviceId }?.name, onOpen = { onOpenSession(a.sessionId) })
+                }
+                item { BottomSpacer() }
+            }
+        }
+    }
+}
+
+/** A resolved request row: what it was, how it ended (Approved/Rejected/Answered/Auto), who and when. */
+@Composable
+private fun ResolvedApprovalCard(a: Approval, pcName: String?, onOpen: () -> Unit) {
+    val (fg, bg) = approvalStatusColors(a)
+    BkCard(onClick = onOpen) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(if (a.isQuestion) "Question from the agent" else "Permission request", color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    listOfNotNull(a.projectName, a.sessionTitle, pcName).joinToString(" · ").ifBlank { "Session" },
+                    color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Chip(approvalStatusLabel(a), fg, bg, dot = true)
+        }
+        (a.title ?: a.permission.takeIf { it.isNotBlank() }?.let { permissionSentence(it).replaceFirstChar { c -> c.uppercase() } })
+            ?.takeIf { it.isNotBlank() }?.let {
+                Text(it, color = TextPrimary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+            }
+        Text(
+            listOfNotNull(resolvedByLabel(a), relative(a.resolvedAt).takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { "Resolved" },
+            color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
